@@ -70,6 +70,8 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 
 	// Collect workbuddy candidates only.
 	var wbCandidates []pluginapi.SchedulerAuthCandidate
+	var cooling []pluginapi.SchedulerAuthCandidate
+	reqModel := strings.TrimSpace(req.Model)
 	for _, c := range req.Candidates {
 		if c.Provider != providerName {
 			continue
@@ -80,7 +82,20 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		if !currentModelRuntime().snapshotForAuthID(c.ID).State.executable() {
 			continue
 		}
+		// A 429 on one model says nothing about the account's other models, so
+		// only drop the pair that is actually throttled. When every pair is
+		// cooling we fall through and keep the account rather than refusing to
+		// route at all (see the fallback below).
+		if reqModel != "" && modelIsCooling(c.ID, reqModel) {
+			cooling = append(cooling, c)
+			continue
+		}
 		wbCandidates = append(wbCandidates, c)
+	}
+	// Everything throttled for this model: reuse the cooling set instead of
+	// deferring, so the request succeeds slowly rather than failing outright.
+	if len(wbCandidates) == 0 && len(cooling) > 0 {
+		wbCandidates = cooling
 	}
 	if len(wbCandidates) == 0 {
 		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})

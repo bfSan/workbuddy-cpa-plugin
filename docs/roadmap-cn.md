@@ -2,7 +2,7 @@
 
 > 目标：把 `workbuddy2api-hub` 里已验证的三个能力搬进 CPA 插件，
 > 并让插件内部的模型列表可写、不再只读。
-> 状态：**待评审**，尚未改代码。
+> 状态：**改造一、改造三已落地**；改造二（倍率同步）未开始。
 
 ---
 
@@ -155,14 +155,43 @@ POST /v0/management/plugins/workbuddy/models/move   # 上移/下移
 ## 建议的落地顺序
 
 ```
-改造三（模型可配置）  ← 先做，独立、有现成基座、风险最低
+改造三（模型可配置）  ← 已完成：model_config.go + 面板「模型列表」+ 三条管理 API
       ↓
-改造一（模型冷却）    ← 依赖改造三的列表，面板要展示冷却
+改造一（模型冷却）    ← 已完成：cooldown.go + 调度过滤 + 面板徽标与解除按钮
       ↓
 改造二（倍率同步）    ← 独立，可最后做
 ```
 
 每一步都要过 `go test ./...`（现有测试全绿，是回归基线）。
+
+---
+
+## 已完成：改造一（模型冷却）
+
+`cooldown.go` 提供 `(authID, modelID)` 维度的冷却表，纯内存：
+
+- `recordUpstreamFailure()` 从 `main.go` 的非流路径、`stream.go` 的异步泵、
+  `collectUpstreamStream()` 的同步兜底三处接入，覆盖全部 executor 入口；
+- 429 无积分语义 → 300s；其他上游错误 → 60s；硬积分错误交回 lifecycle；
+- `scheduler.go` 的 `handleSchedulerPick` 按请求模型过滤候选；
+  **全部候选都在冷却时仍返回一个**，避免直接 503；
+- 管理 API `GET /cooldowns`、`POST /cooldowns/clear`（必须带 `auth_id`）；
+- 面板账号卡带「冷却 N」徽标，每个被限流模型一行，带剩余时间和「解除」；
+- `buildDashboardExWithCallback` 给每个账号填充 `cooling` 数组。
+
+冷却状态同样只是进程内存：**配置重载不丢，CPA 重启后清空**。
+需要跨重启持久化的话再说（可以复用 `writeModelCacheAtomic` 那套缓存目录）。
+
+## 已完成：改造三（模型可配置）
+
+`model_config.go` 提供 overlay（hide / order / add），叠加在基础目录之上：
+
+- `GET /models`、`PUT /models`、`POST /models/action`（hide/restore/move/add）；
+- 面板「模型列表」区块：隐藏、上移、下移、添加自定义模型；
+- 优先级：`hide` > `order` > `add`，同一个 ID 同时 hide 和 add 时以隐藏为准。
+
+与 YAML `models` 的关系：`models` 是持久化的**完整覆盖**，overlay 是内存里的
+**增量调整**，两者互不干扰。
 
 ---
 

@@ -36,6 +36,9 @@ type wbAccount struct {
 	Checkin      *checkinSummary `json:"checkin,omitempty"`
 	TrialClaimed bool            `json:"trial_claimed,omitempty"` // Global: expert trial already claimed
 	Error        string          `json:"error,omitempty"`
+	// Cooling lists the (model) pairs currently throttled for this account.
+	// Empty when nothing is throttled; the panel shows a count badge.
+	Cooling []map[string]any `json:"cooling,omitempty"`
 }
 
 type modelStatus struct {
@@ -272,6 +275,7 @@ func buildDashboardExWithCallback(force, fetchCredits bool, callbackID string) m
 	// Mark selected account in list for UI.
 	for i := range out {
 		out[i].Selected = out[i].AuthID == activeID
+		out[i].Cooling = cooldownSnapshotFor(out[i].AuthID)
 	}
 	resp := map[string]any{
 		"accounts":       out,

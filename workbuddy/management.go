@@ -181,6 +181,8 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: base + "/models", Description: "List the effective model catalog with its source and per-model cooldown state."},
 			{Method: http.MethodPut, Path: base + "/models", Description: "Replace the model list overlay (hide/order/add)."},
 			{Method: http.MethodPost, Path: base + "/models/action", Description: "Apply one model list edit: hide, restore, move or add."},
+			{Method: http.MethodGet, Path: base + "/cooldowns", Description: "List active per-(account, model) throttling entries."},
+			{Method: http.MethodPost, Path: base + "/cooldowns/clear", Description: "Clear throttling for one account (auth_id) or one pair (auth_id + model)."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "WorkBuddy", Description: "WorkBuddy dashboard: credits, check-in, plan, import."},
@@ -261,6 +263,10 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelOverlayWrite(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/models/action":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelOverlayAction(req.ManagementRequest)))
+	case req.Method == http.MethodGet && path == base+"/cooldowns":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCooldownList(req.ManagementRequest)))
+	case req.Method == http.MethodPost && path == base+"/cooldowns/clear":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCooldownClear(req.ManagementRequest)))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }

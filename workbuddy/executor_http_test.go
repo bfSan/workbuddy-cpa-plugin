@@ -441,7 +441,7 @@ func TestInboundHandlersForwardHostCallbackID(t *testing.T) {
 			file:      "main.go",
 			signature: "func handleExecStream(",
 			requirements: []string{
-				"collectUpstreamStream(body, sa, sseFramed, collector, req.HostCallbackID)",
+				"collectUpstreamStream(body, sa, sseFramed, collector, req.HostCallbackID, req.AuthID, upstreamModel)",
 				"pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, req.HostCallbackID)",
 			},
 		},

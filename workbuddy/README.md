@@ -25,6 +25,9 @@ built-in management dashboard.
   re-enabled when a check-in restores them. Global accounts are deleted on
   exhaustion (one-shot trial quota). Hard credit errors from the executor
   trigger an immediate reconcile.
+- **Per-model cooldown** — a 429 on one model cools only that `(auth, model)`
+  pair, so the account keeps serving every other model. Visible and clearable
+  from the panel and the management API.
 - **Daily check-in** — CN accounts are checked in at 09:00 and 21:00 local
   time (configurable). Manual "check in all" from the panel. Per-account
   mutex prevents duplicate claims from racing browser tabs.
@@ -182,6 +185,32 @@ authenticated bootstrap boundary:
    account entitlement or overrides WorkBuddy serving fields.
 3. Source responses are validated before they replace the persistent cache and
    an immutable per-account catalog is published.
+
+Beyond the YAML `models` full override, the plugin keeps a curation overlay
+(`hide` / `order` / `add`) applied on top of whatever the base catalog is. See
+the management API section for the routes and the panel's model block. Both the
+overlay and the per-model cooldown table are process-local: they survive
+config reloads but not a CPA restart.
+
+## Per-model cooldown
+
+A 429 from one model says nothing about the account's ability to serve other
+models, so the plugin throttles the `(auth, model)` pair instead of the whole
+credential.
+
+| Upstream response | Action |
+|---|---|
+| 429 without credit semantics | cool that `(auth, model)` only, 300s by default |
+| 402 / out of credits / quota exhausted | existing lifecycle path: disable the account (delete for Global) |
+| any other upstream error | cool that `(auth, model)` for 60s, self-expiring |
+
+Account-wide failures stay with the lifecycle path — this table is only for the
+narrow case. A request without a model ID is never recorded, because without a
+model the entry would freeze the account, which is exactly what it avoids.
+
+When `scheduler_mode: credits`, a cooling pair is skipped in favour of another
+candidate; if every candidate is cooling for that model, the plugin still picks
+one rather than refusing to route. Switching models is unaffected.
 
 The cache root comes from `os.UserConfigDir()` rather than a hard-coded
 platform path:

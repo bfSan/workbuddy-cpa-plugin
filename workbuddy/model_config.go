@@ -277,6 +277,9 @@ func handleModelListQuery() map[string]any {
 			"position":    i,
 			"hidden":      overlayHidden(overlay, id),
 			"custom":      overlayAdded(overlay, id),
+			// Throttling is per (account, model), so the catalog-level view can
+			// only report how many accounts are affected by this model.
+			"coolingAccounts": cooldownModelCount(id),
 		})
 	}
 	configured := []string(nil)

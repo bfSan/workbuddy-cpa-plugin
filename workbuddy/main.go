@@ -737,6 +737,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		payload, _ := io.ReadAll(reader)
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(payload))
 		reconcileAfterExecutorError(req.AuthID, statusCode, string(payload))
+		recordUpstreamFailure(req.AuthID, upstreamModel, statusCode, string(payload))
 		return errorEnvelopeWithStatus("http_error", fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200)), statusCode), nil
 	}
 	completion, err := aggregateCompletion(reader, req.Model)
@@ -788,7 +789,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// No async stream id → fall back to synchronous chunk collection.
 	if req.StreamID == "" {
 		collector := &sseUsageCollector{}
-		chunks, statusCode, errCollect := collectUpstreamStream(body, sa, sseFramed, collector, req.HostCallbackID)
+		chunks, statusCode, errCollect := collectUpstreamStream(body, sa, sseFramed, collector, req.HostCallbackID, req.AuthID, upstreamModel)
 		if errCollect != nil {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error())
 			var statusErr *upstreamStatusError

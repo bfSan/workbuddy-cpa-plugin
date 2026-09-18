@@ -456,3 +456,85 @@ test("partial import all failure keeps modal open and sanitizes long names", asy
   assert.equal(modal.classList.contains("show"), true);
   assert.equal(toastDetail, "0 成功 / 1 失败 · " + "x".repeat(120) + "：导入失败");
 });
+
+test("fmtLeft renders cooldown remainders without leaking raw seconds", () => {
+  const { context } = loadPanel();
+  assert.equal(context.fmtLeft(0), "0s");
+  assert.equal(context.fmtLeft(45), "45s");
+  assert.equal(context.fmtLeft(60), "1m00s");
+  assert.equal(context.fmtLeft(125), "2m05s");
+  assert.equal(context.fmtLeft(3725), "1h02m");
+  assert.equal(context.fmtLeft(undefined), "0s");
+  assert.equal(context.fmtLeft("900"), "15m00s");
+});
+
+test("card renders one cooldown row per throttled model with a clear action", () => {
+  const { context } = loadPanel();
+  const html = context.card({
+    auth_index: "3",
+    auth_id: "wb-a",
+    name: "acct",
+    nickname: "账号 A",
+    region: "cn",
+    plan: "free",
+    cooling: [
+      { model: "model-1", reason: "rate_limit", seconds: 300 },
+      { model: "model-2", reason: "rate_limit", seconds: 0 },
+    ],
+  });
+  assert.match(html, /冷却 1/);
+  assert.match(html, /data-action="cooldown-clear"/);
+  assert.match(html, /data-model="model-1"/);
+  // An already-expired entry is surfaced as 0 and must not get a badge slot.
+  assert.doesNotMatch(html, /data-model="model-2"/);
+  const without = context.card({ auth_index: "3", auth_id: "wb-a", name: "acct", region: "cn", plan: "free" });
+  assert.doesNotMatch(without, /冷却/);
+  assert.doesNotMatch(without, /cooldown-list/);
+});
+
+test("clearCooldown scopes the request to the host auth id", async () => {
+  const { context } = loadPanel();
+  context.lastAccounts = [{ auth_index: "3", auth_id: "wb-a" }];
+  let path = "";
+  let opts = {};
+  context.api = async (p, o) => { path = p; opts = o || {}; return { removed: 1 }; };
+  context.load = async () => true;
+  // The card carries the host auth id; the handler uses it verbatim.
+  await context.clearCooldown("wb-a", "model-1", { dataset: {}, innerHTML: "解除", disabled: false });
+  assert.equal(path, "/cooldowns/clear?auth_id=wb-a&model=model-1");
+  assert.equal(opts.method, "POST");
+
+  await context.clearCooldown("wb-a", "", { dataset: {}, innerHTML: "解除", disabled: false });
+  assert.equal(path, "/cooldowns/clear?auth_id=wb-a");
+});
+
+test("clearCooldown falls back to the index when no host id is known", async () => {
+  const { context } = loadPanel();
+  context.lastAccounts = [];
+  let path = "";
+  context.api = async p => { path = p; return {}; };
+  context.load = async () => true;
+  await context.clearCooldown("7", null, null);
+  assert.equal(path, "/cooldowns/clear?auth_id=7");
+});
+
+test("card exposes the host auth id used by the clear action", () => {
+  const { context } = loadPanel();
+  const html = context.card({
+    auth_index: "3",
+    auth_id: "wb-a",
+    name: "acct",
+    region: "cn",
+    plan: "free",
+    cooling: [{ model: "model-1", seconds: 90 }],
+  });
+  assert.match(html, /data-auth-id="wb-a"/);
+  const fallback = context.card({
+    auth_index: "9",
+    name: "acct",
+    region: "cn",
+    plan: "free",
+    cooling: [{ model: "model-1", seconds: 90 }],
+  });
+  assert.match(fallback, /data-auth-id="9"/);
+});

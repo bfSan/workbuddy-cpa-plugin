@@ -110,6 +110,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		// Drain the error body via the same bridge so the message is complete.
 		errPayload, _ := io.ReadAll(newHostStreamReader(stream))
 		publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(errPayload))
+		recordUpstreamFailure(authID, upstreamModel, statusCode, string(errPayload))
 		if authUID != "" {
 			go reconcileByUID(authUID, statusCode, string(errPayload))
 		}
@@ -163,7 +164,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 // the upstream, clean each chunk, return them as a slice. The collector, when
 // non-nil, observes raw upstream chunks for usage extraction. statusCode is the
 // upstream HTTP status (0 for transport-level failures).
-func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector, callbackID string) ([]pluginapi.ExecutorStreamChunk, int, error) {
+func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector, callbackID string, authID, upstreamModel string) ([]pluginapi.ExecutorStreamChunk, int, error) {
 	httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
@@ -178,6 +179,7 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 	reader := newHostStreamReader(stream)
 	if statusCode >= 400 {
 		errPayload, _ := io.ReadAll(reader)
+		recordUpstreamFailure(authID, upstreamModel, statusCode, string(errPayload))
 		if sa != nil && sa.Account.UID != "" {
 			go reconcileByUID(sa.Account.UID, statusCode, string(errPayload))
 		}

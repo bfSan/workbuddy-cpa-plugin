@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Per-model cooldown
+
+- Track throttling per `(auth, model)` pair instead of per account, so a 429 on
+  one model leaves the rest of that account's quota usable.
+- Record pure rate limits for 300s and other upstream errors for 60s; leave
+  hard credit failures (402 / out of credits) to the existing lifecycle path.
+- Never record a failure without a model ID: that would freeze the account,
+  which is what the pair-scoped table exists to avoid.
+- Skip cooling pairs in `scheduler.pick`, and fall back to the cooling set when
+  every candidate is throttled for that model rather than refusing to route.
+- Expose `GET /cooldowns` and `POST /cooldowns/clear` (the latter requires
+  `auth_id` and refuses a global wipe), plus a per-account `cooling` list on
+  `/accounts`.
+- Show a "冷却 N" badge and one clearable row per throttled model on each panel
+  account card.
+- Keep state in memory only: it survives config reloads but not a CPA restart.
+
+### In-plugin model list overlay
+
+- Add a plugin-owned `hide` / `order` / `add` overlay applied on top of the base
+  catalog, so upstream discovery can be curated instead of only replaced.
+- Register `GET`/`PUT /models` and `POST /models/action`, and add a model block
+  with hide, move and custom-add controls to the panel.
+
 ## 0.9.3
 
 ### Dynamic model bootstrap

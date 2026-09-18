@@ -73,6 +73,11 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .badge.cn{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
 .badge.global{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .badge.disabled{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
+.badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
+.cooldown-list{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+.cooldown-row{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px}
+.cooldown-row .cd-model{font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
+.cooldown-row .cd-left{color:var(--warn);font-variant-numeric:tabular-nums;flex:0 0 auto}
 .filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
 .ftag{background:var(--surface);border:1px solid var(--border);color:var(--mut);border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600}
 .ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
@@ -401,6 +406,7 @@ function bindCardActions(root){
       else if(act==="claim") claimTrial(idx, ev.currentTarget);
       else if(act==="select") selectAuth(idx, ev.currentTarget);
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
+      else if(act==="cooldown-clear") clearCooldown(ev.currentTarget.getAttribute("data-auth-id")||idx, ev.currentTarget.getAttribute("data-model"), ev.currentTarget);
     });
   });
 }
@@ -432,14 +438,29 @@ function card(a){
     ? `<button class="done" disabled="disabled">使用中</button>`
     : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
-  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
+  const cooling=Array.isArray(a.cooling)?a.cooling.filter(c=>Number(c&&c.seconds)>0):[];
+  const coolingBadge=cooling.length?`<span class="badge cooling" title="按模型维度的临时冷却">冷却 ${cooling.length}</span>`:"";
+  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+coolingBadge+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
+  const coolingHTML=cooling.length?`<div class="cooldown-list">`+cooling.map(c=>{
+    const model=String(c.model||"");
+    const left=Number(c.seconds)||0;
+    return `<div class="cooldown-row"><span class="cd-model">${esc(model)}</span><span class="cd-left">${fmtLeft(left)}</span><button type="button" class="ftag" data-action="cooldown-clear" data-auth-index="${esc(a.auth_index)}" data-auth-id="${esc(a.auth_id||a.auth_index)}" data-model="${esc(model)}" aria-label="解除 ${esc(model)} 的冷却">解除</button></div>`;
+  }).join("")+`</div>`:"";
   return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}</span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
   ${progressHTML(cr)}
+  ${coolingHTML}
   ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
   <div class="actions">${selectBtn}${refreshBtn}${actionHTML}</div>
   </div>`;
+}
+function fmtLeft(sec){
+  const s=Math.max(0,Math.round(Number(sec)||0));
+  if(s<60) return `${s}s`;
+  const m=Math.floor(s/60);
+  if(m<60) return `${m}m${String(s%60).padStart(2,"0")}s`;
+  return `${Math.floor(m/60)}h${String(m%60).padStart(2,"0")}m`;
 }
 let currentFilter="all";
 let accountSearch="";
@@ -707,6 +728,21 @@ async function managementAPI(path, opts={}){
 }
 
 /* ---- 模型列表：在目录上做隐藏 / 排序 / 添加 ---- */
+async function clearCooldown(idx, model, btn){
+  if(btn) busy(btn,true);
+  try{
+    // Cooldown keys are host auth IDs, not the panel's display index.
+    const acct=lastAccounts.find(a=>String(a.auth_index)===String(idx));
+    const id=(acct&&(acct.auth_id||acct.auth_index))||idx;
+    const q=model?`?auth_id=${encodeURIComponent(id)}&model=${encodeURIComponent(model)}`:`?auth_id=${encodeURIComponent(id)}`;
+    await api("/cooldowns/clear"+q,{method:"POST"});
+    await load(true);
+  }catch(e){
+    toast("解除冷却失败","err",String(e&&e.message||e));
+  }finally{
+    if(btn) busy(btn,false);
+  }
+}
 const MODEL_SOURCE_LABEL={config:"配置覆盖",fresh:"上游实时",cache:"缓存",none:"未知"};
 let lastModels=[];
 
@@ -744,6 +780,7 @@ function renderModels(){
     const name=m.displayName||m.name||"";
     const tags=[];
     if(m.custom) tags.push(`<span class="badge">自定义</span>`);
+    if(Number(m.coolingAccounts)>0) tags.push(`<span class="badge cooling" title="${Number(m.coolingAccounts)} 个账号的这个模型正在冷却">冷却 ${Number(m.coolingAccounts)}</span>`);
     return `<div class="model-row">
       <span class="model-id">${esc(id)}</span>
       <span class="model-name mut">${esc(name)}</span>

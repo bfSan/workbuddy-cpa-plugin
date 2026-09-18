@@ -373,3 +373,107 @@ func TestEnsureDefaultActiveAuth_AllExhausted_KeepsCurrent(t *testing.T) {
 		t.Fatalf("all exhausted should keep a1, got %q", id)
 	}
 }
+
+// TestSchedulerPick_SkipsCoolingModelPair is the point of the per-model
+// cooldown: a throttled (auth, model) pair must lose that request while the
+// same account stays eligible for every other model.
+func TestSchedulerPick_SkipsCoolingModelPair(t *testing.T) {
+	resetActiveAuth(t)
+	resetCooldowns(t)
+	installModelStatesForTest(t, map[string]modelReadinessState{"wb-a": modelReady, "wb-b": modelReady})
+	accountCache.Store("wb-a", &accountCacheEntry{credits: &creditsSummary{TotalRemain: 500, TotalSize: 500}})
+	accountCache.Store("wb-b", &accountCacheEntry{credits: &creditsSummary{TotalRemain: 400, TotalSize: 500}})
+	defer func() {
+		accountCache.Delete("wb-a")
+		accountCache.Delete("wb-b")
+	}()
+	setActiveAuthID("wb-a")
+	markModelCooldown("wb-a", "model-1", cooldownReasonRateLimit)
+
+	pickFor := func(model string) string {
+		t.Helper()
+		raw, err := handleSchedulerPick(mustMarshal(t, pluginapi.SchedulerPickRequest{
+			Provider: providerName,
+			Model:    model,
+			Candidates: []pluginapi.SchedulerAuthCandidate{
+				{ID: "wb-a", Provider: providerName},
+				{ID: "wb-b", Provider: providerName},
+			},
+		}))
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		resp := parsePickResponse(t, raw)
+		if !resp.Handled {
+			return ""
+		}
+		return resp.AuthID
+	}
+
+	if got := pickFor("model-1"); got != "wb-b" {
+		t.Fatalf("throttled model should move to wb-b, got %q", got)
+	}
+	// Selection is sticky, so re-point it at wb-a to isolate the model filter:
+	// the same account must still be eligible for every other model.
+	setActiveAuthID("wb-a")
+	if got := pickFor("model-2"); got != "wb-a" {
+		t.Fatalf("other models should stay on wb-a, got %q", got)
+	}
+}
+
+// TestSchedulerPick_AllCoolingStillRoutes: when every account is throttled for
+// the requested model, degrade to the throttled set instead of refusing to
+// route — a slow answer beats a hard failure.
+func TestSchedulerPick_AllCoolingStillRoutes(t *testing.T) {
+	resetActiveAuth(t)
+	resetCooldowns(t)
+	installModelStatesForTest(t, map[string]modelReadinessState{"wb-a": modelReady, "wb-b": modelReady})
+	accountCache.Store("wb-a", &accountCacheEntry{credits: &creditsSummary{TotalRemain: 500, TotalSize: 500}})
+	accountCache.Store("wb-b", &accountCacheEntry{credits: &creditsSummary{TotalRemain: 400, TotalSize: 500}})
+	defer func() {
+		accountCache.Delete("wb-a")
+		accountCache.Delete("wb-b")
+	}()
+	setActiveAuthID("wb-a")
+	markModelCooldown("wb-a", "model-1", cooldownReasonRateLimit)
+	markModelCooldown("wb-b", "model-1", cooldownReasonRateLimit)
+
+	raw, err := handleSchedulerPick(mustMarshal(t, pluginapi.SchedulerPickRequest{
+		Provider: providerName,
+		Model:    "model-1",
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{ID: "wb-a", Provider: providerName},
+			{ID: "wb-b", Provider: providerName},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	resp := parsePickResponse(t, raw)
+	if !resp.Handled || resp.AuthID == "" {
+		t.Fatalf("all-throttled should still route, got %+v", resp)
+	}
+}
+
+// TestSchedulerPick_NoModelKeepsLegacyBehavior: an empty model means there is
+// nothing to key the cooldown on, so routing must stay exactly as before.
+func TestSchedulerPick_NoModelKeepsLegacyBehavior(t *testing.T) {
+	resetActiveAuth(t)
+	resetCooldowns(t)
+	installModelStatesForTest(t, map[string]modelReadinessState{"wb-a": modelReady})
+	setActiveAuthID("wb-a")
+	markModelCooldown("wb-a", "model-1", cooldownReasonRateLimit)
+	raw, err := handleSchedulerPick(mustMarshal(t, pluginapi.SchedulerPickRequest{
+		Provider: providerName,
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{ID: "wb-a", Provider: providerName},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	resp := parsePickResponse(t, raw)
+	if !resp.Handled || resp.AuthID != "wb-a" {
+		t.Fatalf("missing model should not change routing, got %+v", resp)
+	}
+}

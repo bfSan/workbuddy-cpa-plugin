@@ -185,6 +185,41 @@ POST /models/action   单条编辑 {"action":"hide|restore|move|add","id":"...",
 **overlay 只保存在插件进程内存中**：配置重载不会丢，CPA 重启后会恢复默认。
 需要长期固定的模型清单请写进 YAML `models`，那是持久化的完整覆盖。
 
+## 模型维度冷却
+
+一个模型触发 429，不代表这个账号跑不了别的模型。整账号冷却会把剩余额度一起
+浪费掉，所以插件按 `(auth, model)` 二元组记录冷却，调度时只跳过真正被限流的那一对。
+
+| 上游响应 | 动作 |
+|---|---|
+| 429 且无积分语义（纯限流） | 只冻结该 `(auth, model)`，默认 300s |
+| 402 / 余额不足 / 额度用尽 | 走既有 lifecycle 路径，整账号 disable（Global 则 delete） |
+| 其他上游错误 | 按 60s 记入该 `(auth, model)`，到期自动恢复 |
+
+**账号级故障不进这张表**：token 失效、硬额度耗尽仍由 lifecycle 处理，账号级行为不变。
+请求模型 ID 为空时不写入——没有模型维度就会退化成整账号冻结，这正是要避免的。
+
+调度行为（`scheduler_mode: credits` 时）：
+
+- 某账号的该模型正在冷却 → 跳过这个账号，改用其他非冷却候选；
+- 所有账号的该模型都在冷却 → 仍从冷却集合里挑一个返回，慢一点也强过硬失败；
+- 换个模型请求 → 冷却不影响，账号照常可用。
+
+管理 API（路径前缀 `/v0/management/plugins/workbuddy`）：
+
+```text
+GET  /cooldowns         全部生效中的冷却项，?auth_id= 只看一个账号
+POST /cooldowns/clear   解除一个账号的冷却（auth_id），或只解除一对（auth_id + model）
+```
+
+`POST /cooldowns/clear` 必须带 `auth_id`（query 或 body），不支持一次清空全部——
+那是单条 API 就能打穿所有流控的坑。
+
+面板上每个账号卡会带「冷却 N」徽标，下面列出被限流的模型和剩余时间，每行一个
+「解除」按钮；`/accounts` 返回的每个账号也带 `cooling` 数组。
+
+**冷却状态同样只在插件进程内存中**：配置重载不会丢，CPA 重启后清空。
+
 Cache 根目录由 `os.UserConfigDir()` 计算，不硬编码平台路径：
 
 ```plaintext

@@ -26,6 +26,20 @@
 - Register `GET`/`PUT /models` and `POST /models/action`, and add a model block
   with hide, move and custom-add controls to the panel.
 
+### Upstream credit multipliers
+
+- Merge `/v3/config`'s `data.models` rich catalog into the cli agent's ID list
+  so per-model metadata (multiplier, display name, limits) survives parsing.
+  Entitlement still comes from the agent list; unknown IDs never enter.
+- Read `credits` from the legacy personal-models endpoint too, and keep the
+  upstream string verbatim while parsing a numeric rate for display.
+- Add a `model_credits` registry with local-override > upstream precedence.
+- Add the YAML `model_credits` block (persistent, authoritative on reload) plus
+  `GET`/`POST /models/credits`, and a per-model multiplier badge and editor on
+  the panel.
+- The multiplier is not forwarded to CPA billing: `pluginapi.ModelInfo` has no
+  cost field, so it serves panel display and plugin-side estimation only.
+
 ## 0.9.3
 
 ### Dynamic model bootstrap
@@ -582,3 +596,6 @@
 
 ### Fixed
 - Normalize OpenAI object `tool_choice` for CodeBuddy upstream
+- **Per-model cooldown** — a 429 on one model cools only that `(auth, model)`
+  pair, so the account keeps serving every other model. Visible and clearable
+  from the panel and the management API.

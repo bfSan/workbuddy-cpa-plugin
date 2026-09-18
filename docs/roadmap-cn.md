@@ -2,7 +2,7 @@
 
 > 目标：把 `workbuddy2api-hub` 里已验证的三个能力搬进 CPA 插件，
 > 并让插件内部的模型列表可写、不再只读。
-> 状态：**改造一、改造三已落地**；改造二（倍率同步）未开始。
+> 状态：**三项改造全部落地**。
 
 ---
 
@@ -159,7 +159,7 @@ POST /v0/management/plugins/workbuddy/models/move   # 上移/下移
       ↓
 改造一（模型冷却）    ← 已完成：cooldown.go + 调度过滤 + 面板徽标与解除按钮
       ↓
-改造二（倍率同步）    ← 独立，可最后做
+改造二（倍率同步）    ← 已完成：model_credits.go + v3/config 富目录合并 + 面板倍率编辑
 ```
 
 每一步都要过 `go test ./...`（现有测试全绿，是回归基线）。
@@ -192,6 +192,37 @@ POST /v0/management/plugins/workbuddy/models/move   # 上移/下移
 
 与 YAML `models` 的关系：`models` 是持久化的**完整覆盖**，overlay 是内存里的
 **增量调整**，两者互不干扰。
+
+## 已完成：改造二（倍率从上游同步）
+
+**关键发现**：倍率不在 cli agent 的 `models` 列表里（那只是 ID 字符串），
+而在 `/v3/config` 的 `data.models` **富目录**里。插件原先只解析 agent 列表，
+把整个富目录丢掉了 —— 所以不是"加个字段"，而是要把富目录按 ID 合并回来。
+
+实测（生产 CN 账号，真实凭证）：16 个模型里 15 个带上了倍率。
+
+```text
+hy4-preview-f       x0.00     hy3        x0.00     hy3-x        x0.05
+deepseek-v4.1-flash x0.03     glm-5.3    x0.79     glm-5.3-flash x0.06
+glm-5.2             x0.79     glm-5.1    x0.79
+```
+
+`model_credits.go` 提供注册表，优先级 **本地固定 > 上游同步**：
+
+- 上游值从 `parseWorkBuddyV3Config` 的富目录合并、以及 legacy 端点解析得到；
+- 上游格式不统一（`x0.29` / `x2.20 credits` / `x0.00`），原样保留字符串，
+  同时 `parseModelCreditsRate()` 解析出数值；
+- 本地固定两个入口：YAML `model_credits`（持久化，重载时权威）、
+  面板「倍率」按钮（进程内存）；
+- 管理 API `GET /models/credits`、`POST /models/credits`；
+- 面板每个模型一行带倍率徽标，免费促销（`x0.00`）显示为「免费」而不是裸 0。
+
+**倍率传不到 CPA 侧**：`pluginapi.ModelInfo` 确认没有成本/倍率字段
+（v7.2.30 SDK 已核对）。所以倍率只服务插件自身：面板展示 + 配合模型维度冷却
+做额度预估。要参与 CPA 计费得等上游 SDK 加字段，或者走 usage 上报路径另说。
+
+边界情况要注意：`x0.00` 的数值解析就是 0，必须靠 `source` 字段
+（而非数值）区分"促销免费"和"上游没上报"。
 
 ---
 

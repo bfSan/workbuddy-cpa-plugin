@@ -22,6 +22,71 @@ func TestParseWorkBuddyV3ConfigSelectsCompleteCLIList(t *testing.T) {
 	}
 }
 
+// TestParseWorkBuddyV3ConfigMergesRichCatalog is why credits sync exists: the
+// cli agent's list is only IDs, while the sibling data.models catalog carries
+// the per-model multiplier. Entitlement must still come from the agent list.
+func TestParseWorkBuddyV3ConfigMergesRichCatalog(t *testing.T) {
+	raw := []byte(`{"code":0,"data":{
+	  "agents":[{"name":"cli","models":["serve-alpha","serve-beta"]}],
+	  "models":[
+	    {"id":"serve-alpha","name":"Alpha","descriptionEn":"Alpha EN","credits":"x0.29","maxInputTokens":4096,"maxOutputTokens":512},
+	    {"id":"serve-beta","name":"Beta","descriptionZh":"Beta ZH","credits":"x2.20 credits"},
+	    {"id":"not-entitled","name":"Ghost","credits":"x9.99"}
+	  ]}}`)
+	got, err := parseWorkBuddyV3Config(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("only entitled models should survive, got %#v", got)
+	}
+	if got[0].Credits != "x0.29" || got[1].Credits != "x2.20 credits" {
+		t.Fatalf("credits not merged: %#v", got)
+	}
+	if got[0].Name != "Alpha" || got[0].Description != "Alpha EN" {
+		t.Fatalf("rich metadata not merged: %#v", got[0])
+	}
+	if got[1].Description != "Beta ZH" {
+		t.Fatalf(" Zh description should be used when EN is absent: %#v", got[1])
+	}
+	if got[0].ContextLength == nil || *got[0].ContextLength != 4096 || got[0].MaxCompletionTokens == nil || *got[0].MaxCompletionTokens != 512 {
+		t.Fatalf("limits not merged: %#v", got[0])
+	}
+}
+
+func TestParseWorkBuddyV3Config_NoRichCatalogStillWorks(t *testing.T) {
+	// Older/absent rich list degrades to IDs only, not to an error.
+	raw := []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)
+	got, err := parseWorkBuddyV3Config(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "serve-alpha" || got[0].Credits != "" {
+		t.Fatalf("models = %#v", got)
+	}
+}
+
+func TestParseWorkBuddyLegacyModelsReadsCredits(t *testing.T) {
+	raw := []byte(`{"code":0,"data":{"models":[{"id":"serve-alpha","credits":"x0.05","disabled":false}]}}`)
+	got, err := parseWorkBuddyLegacyModels(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Credits != "x0.05" {
+		t.Fatalf("models = %#v", got)
+	}
+}
+
+func TestValidateModelFacts_BoundsCreditsField(t *testing.T) {
+	got, err := validateModelFacts([]modelFacts{{ID: "serve-alpha", Credits: "x1" + multiString("0", 200)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Credits != "" {
+		t.Fatalf("oversized credits accepted: %q", got[0].Credits)
+	}
+}
+
 func TestParseWorkBuddyLegacyModelsDropsDisabled(t *testing.T) {
 	raw := []byte(`{"code":0,"data":{"models":[{"id":"serve-alpha","name":"Alpha","disabled":false,"contextWindow":4096,"maxTokens":512},{"id":"serve-off","disabled":true}]}}`)
 	got, err := parseWorkBuddyLegacyModels(raw)

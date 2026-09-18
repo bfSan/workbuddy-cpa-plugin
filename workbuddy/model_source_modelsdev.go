@@ -219,6 +219,9 @@ func fillMissingModelFacts(dst *modelFacts, src modelFacts) {
 	if dst.Description == "" {
 		dst.Description = src.Description
 	}
+	if dst.Credits == "" {
+		dst.Credits = src.Credits
+	}
 	if dst.ContextLength == nil {
 		dst.ContextLength = cloneInt64(src.ContextLength)
 	}
@@ -238,6 +241,10 @@ func modelInfoFromSources(serving modelFacts, canonical *modelFacts) pluginapi.M
 	if canonical != nil {
 		fillMissingModelFacts(&merged, *canonical)
 	}
+	// pluginapi.ModelInfo has no cost field, so the multiplier cannot ride
+	// along to CPA. Record it in the plugin-side registry instead; the panel
+	// and the estimation helpers read it from there.
+	recordModelCredits(merged.ID, merged.Credits)
 	info := defaultModelInfo(serving.ID, merged.Name)
 	info.Description = merged.Description
 	if merged.ContextLength != nil {

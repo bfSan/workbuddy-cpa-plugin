@@ -49,6 +49,7 @@ type featureRuntimeConfig struct {
 	oauthClientMode    string
 	enterpriseCredits  bool
 	configuredModels   []string
+	configuredCredits  map[string]string
 }
 
 var featureRuntime atomic.Pointer[featureRuntimeConfig]
@@ -69,6 +70,12 @@ func currentFeatureRuntime() *featureRuntimeConfig {
 	snapshot := *cfg
 	snapshot.desensitizeTerms = append([]string(nil), cfg.desensitizeTerms...)
 	snapshot.configuredModels = append([]string(nil), cfg.configuredModels...)
+	if cfg.configuredCredits != nil {
+		snapshot.configuredCredits = make(map[string]string, len(cfg.configuredCredits))
+		for id, value := range cfg.configuredCredits {
+			snapshot.configuredCredits[id] = value
+		}
+	}
 	return &snapshot
 }
 
@@ -78,6 +85,9 @@ type featureConfigYAML struct {
 	OAuthClientMode   string    `yaml:"oauth_client_mode"`
 	EnterpriseCredits *bool     `yaml:"enterprise_credits"`
 	Models            yaml.Node `yaml:"models"`
+	// ModelCredits pins a multiplier per model ID, overriding whatever the
+	// upstream reported. Empty value clears the override.
+	ModelCredits yaml.Node `yaml:"model_credits"`
 }
 
 func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
@@ -111,6 +121,10 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	credits, err := normalizedModelCreditsConfig(doc.ModelCredits)
+	if err != nil {
+		return nil, err
+	}
 	return &featureRuntimeConfig{
 		desensitizeEnabled: doc.Desensitize != nil && *doc.Desensitize,
 		desensitizeTerms:   terms,
@@ -119,7 +133,52 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 		oauthClientMode:    mode,
 		enterpriseCredits:  doc.EnterpriseCredits != nil && *doc.EnterpriseCredits,
 		configuredModels:   models,
+		configuredCredits:  credits,
 	}, nil
+}
+
+// normalizedModelCreditsConfig decodes `model_credits` into an ordered map.
+// Keys are model IDs; values are the upstream-format multiplier strings.
+func normalizedModelCreditsConfig(node yaml.Node) (map[string]string, error) {
+	if node.Kind == 0 {
+		return nil, nil
+	}
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" && node.Style&yaml.TaggedStyle == 0 {
+		return nil, nil
+	}
+	if node.Kind != yaml.MappingNode || node.Tag != "!!map" || node.Style&yaml.TaggedStyle != 0 {
+		return nil, errors.New("model_credits must be a map of model id to multiplier")
+	}
+	out := make(map[string]string, len(node.Content)/2)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" || key.Style&yaml.TaggedStyle != 0 {
+			return nil, errors.New("model_credits keys must be strings")
+		}
+		id := strings.TrimSpace(key.Value)
+		if id == "" {
+			return nil, errors.New("model_credits keys must not be empty")
+		}
+		if len(id) > maxDiscoveredModelIDBytes {
+			return nil, errors.New("model_credits key exceeds maximum ID length")
+		}
+		if _, dup := out[id]; dup {
+			return nil, errors.New("model_credits keys must not be duplicated")
+		}
+		if value.Kind == yaml.ScalarNode && value.Tag == "!!null" && value.Style&yaml.TaggedStyle == 0 {
+			out[id] = ""
+			continue
+		}
+		if value.Kind != yaml.ScalarNode || value.Tag != "!!str" || value.Style&yaml.TaggedStyle != 0 {
+			return nil, errors.New("model_credits values must be strings")
+		}
+		credits := normalizeModelCredits(value.Value)
+		if credits != strings.TrimSpace(value.Value) {
+			return nil, errors.New("model_credits value is invalid for " + id)
+		}
+		out[id] = credits
+	}
+	return out, nil
 }
 
 func normalizedConfiguredModels(node yaml.Node) ([]string, error) {

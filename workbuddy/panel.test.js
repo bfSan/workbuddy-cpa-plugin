@@ -538,3 +538,86 @@ test("card exposes the host auth id used by the clear action", () => {
   });
   assert.match(fallback, /data-auth-id="9"/);
 });
+// The panel's model state is a module-local `let`, so tests drive the real
+// loadModels() path with a stubbed api() rather than assigning it directly.
+const CREDITS_MODELS = [
+  { id: "glm-5.2", name: "GLM", credits: { value: "x0.79 credits", rate: 0.79, source: "upstream" } },
+  { id: "hy3", name: "HY3", credits: { value: "x0.00", rate: 0, source: "upstream" } },
+  { id: "deep-model", name: "Deep", credits: { value: "x1.20", rate: 1.2, source: "override" } },
+  { id: "mystery", name: "?", credits: { value: "", rate: 0, source: "" } },
+];
+
+function loadPanelWithCredits() {
+  const panel = loadPanel();
+  panel.context.api = async () => ({ models: CREDITS_MODELS, source: "fresh" });
+  return panel;
+}
+
+test("renderModels shows the credit multiplier with its source", async () => {
+  const { context, elements } = loadPanelWithCredits();
+  await context.loadModels(false);
+  const html = elements.get("modelList").innerHTML;
+  assert.match(html, /0\.79x/);
+  assert.match(html, /1\.20x/);
+  // x0.00 is a promotion, not an unknown rate: it must read as free.
+  assert.match(html, /免费/);
+  // A model with no multiplier gets no badge at all rather than a bare "0x".
+  assert.doesNotMatch(html, /mystery[\s\S]{0,160}?badge/);
+  // Every row gets a way to pin the multiplier.
+  assert.equal((html.match(/openCreditsEditor\(/g) || []).length, 4);
+});
+
+test("openCreditsEditor seeds the input and saveModelCredits posts it", async () => {
+  const { context, elements } = loadPanelWithCredits();
+  await context.loadModels(false);
+  context.openCreditsEditor("hy3");
+  const row = elements.get("creditsEditRow");
+  assert.equal(row.style.display, "flex");
+  assert.equal(elements.get("creditsEditTitle").textContent, "积分倍率 · hy3");
+  assert.match(elements.get("creditsEditHint").textContent, /上游同步/);
+
+  context.openCreditsEditor("deep-model");
+  // A pinned value seeds the input so editing starts from what is in effect.
+  assert.equal(elements.get("creditsEditInput").value, "x1.20");
+  assert.match(elements.get("creditsEditHint").textContent, /本地固定/);
+
+  let path = "", body = "";
+  const realApi = context.api;
+  context.api = async (p, o) => {
+    if (p === "/models/credits") { path = p; body = JSON.parse(o.body); return { success: true }; }
+    return realApi(p, o);
+  };
+  let toastDetail = "";
+  context.toast = (_t, _k, detail) => { toastDetail = detail; };
+  elements.get("creditsEditInput").value = "x0.33";
+  await context.saveModelCredits();
+  assert.equal(path, "/models/credits");
+  assert.deepEqual(body, { model: "deep-model", credits: "x0.33" });
+  assert.equal(row.style.display, "none");
+  assert.match(toastDetail, /x0\.33/);
+});
+
+test("saveModelCredits clears the pin when the input is empty", async () => {
+  const { context, elements } = loadPanelWithCredits();
+  await context.loadModels(false);
+  context.openCreditsEditor("deep-model");
+  let body = "";
+  const realApi = context.api;
+  context.api = async (p, o) => {
+    if (p === "/models/credits") { body = JSON.parse(o.body); return { success: true }; }
+    return realApi(p, o);
+  };
+  context.toast = () => {};
+  elements.get("creditsEditInput").value = "   ";
+  await context.saveModelCredits();
+  assert.deepEqual(body, { model: "deep-model", credits: "" });
+});
+
+test("saveModelCredits with no model open is a no-op", async () => {
+  const { context } = loadPanelWithCredits();
+  let calls = 0;
+  context.api = async () => { calls += 1; return { models: [], source: "none" }; };
+  context.closeCreditsEditor();
+  await context.saveModelCredits();
+  assert.equal(calls, 0);
+});

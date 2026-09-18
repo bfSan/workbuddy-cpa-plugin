@@ -277,6 +277,7 @@ func handleModelListQuery() map[string]any {
 			"position":    i,
 			"hidden":      overlayHidden(overlay, id),
 			"custom":      overlayAdded(overlay, id),
+			"credits":     modelCreditsField(id),
 			// Throttling is per (account, model), so the catalog-level view can
 			// only report how many accounts are affected by this model.
 			"coolingAccounts": cooldownModelCount(id),
@@ -313,6 +314,49 @@ func overlayAdded(o modelOverlay, id string) bool {
 		}
 	}
 	return false
+}
+
+// handleModelCreditsQuery reports every known multiplier with its source.
+func handleModelCreditsQuery() map[string]any {
+	entries := modelCreditsSnapshot()
+	return map[string]any{
+		"credits":    entries,
+		"count":      len(entries),
+		"persistent": false,
+	}
+}
+
+// handleModelCreditsWrite pins or clears one multiplier. An empty value clears
+// the pin so the upstream number takes over again.
+func handleModelCreditsWrite(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		Model   string `json:"model"`
+		ID      string `json:"id"`
+		Credits string `json:"credits"`
+	}
+	if len(req.Body) > 0 {
+		if err := json.Unmarshal(req.Body, &body); err != nil {
+			return map[string]any{"success": false, "error": "invalid json body"}
+		}
+	}
+	id := strings.TrimSpace(body.Model)
+	if id == "" {
+		id = strings.TrimSpace(body.ID)
+	}
+	if id == "" {
+		return map[string]any{"success": false, "error": "model is required"}
+	}
+	value := normalizeModelCredits(body.Credits)
+	setModelCreditsOverride(id, value)
+	stored, source := modelCredits(id)
+	return map[string]any{
+		"success":    true,
+		"model":      id,
+		"credits":    stored,
+		"rate":       parseModelCreditsRate(stored),
+		"source":     source,
+		"persistent": false,
+	}
 }
 
 // handleModelOverlayWrite replaces the whole overlay.

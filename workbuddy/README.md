@@ -28,6 +28,10 @@ built-in management dashboard.
 - **Per-model cooldown** — a 429 on one model cools only that `(auth, model)`
   pair, so the account keeps serving every other model. Visible and clearable
   from the panel and the management API.
+- **Credit multipliers** — the per-model multiplier syncs from upstream instead
+  of a static table, with a local override for models where upstream is missing
+  or stale. Shown on the panel; not forwarded to CPA billing (`pluginapi.ModelInfo`
+  has no cost field).
 - **Daily check-in** — CN accounts are checked in at 09:00 and 21:00 local
   time (configurable). Manual "check in all" from the panel. Per-account
   mutex prevents duplicate claims from racing browser tabs.
@@ -211,6 +215,38 @@ model the entry would freeze the account, which is exactly what it avoids.
 When `scheduler_mode: credits`, a cooling pair is skipped in favour of another
 candidate; if every candidate is cooling for that model, the plugin still picks
 one rather than refusing to route. Switching models is unaffected.
+
+## Credit multipliers
+
+Each model's credit multiplier comes from upstream rather than a hard-coded
+table. The source is `/v3/config`'s `data.models` rich catalog — the cli agent's
+`models` list carries IDs only, so the rich sibling list is merged in by ID.
+The legacy `/console/enterprises/personal/models` endpoint carries the field
+too. Upstream formats vary (`x0.29`, `x2.20 credits`, `x0.00`); the string is
+kept verbatim and a numeric rate is parsed from it.
+
+Precedence is local override > upstream. Overrides come from the YAML
+`model_credits` block (persistent, authoritative on reload) or the panel's
+per-model multiplier control (process-local):
+
+```yaml
+model_credits:
+  glm-5.2: "x0.79 credits"
+  hy3: x0.00        # pin a promotion as free
+  deep-model: null  # un-pin: fall back to the upstream value
+```
+
+```text
+GET  /models/credits   every known multiplier with its source
+POST /models/credits   pin or un-pin one: {"model":"glm-5.2","credits":"x0.40"}
+```
+
+An empty `credits` clears the pin so upstream takes over again.
+
+`pluginapi.ModelInfo` has no cost field, so the multiplier is **not** handed to
+CPA for billing. It serves the plugin itself: panel display, and credit
+estimation alongside the per-model cooldown. Feeding CPA's own billing would
+require an SDK field that does not exist yet.
 
 The cache root comes from `os.UserConfigDir()` rather than a hard-coded
 platform path:

@@ -14,10 +14,16 @@ import (
 const maxDiscoveredModelIDBytes = 512
 const modelSourceRequestTimeout = 15 * time.Second
 
+const maxModelCreditsBytes = 64
+
 type modelFacts struct {
-	ID                        string   `json:"id"`
-	Name                      string   `json:"name,omitempty"`
-	Description               string   `json:"description,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	// Credits is the upstream per-model multiplier as reported verbatim, e.g.
+	// "x0.29", "x2.20 credits", "x0.00". It is display/estimation metadata:
+	// pluginapi.ModelInfo has no cost field, so it never reaches CPA billing.
+	Credits                   string   `json:"credits,omitempty"`
 	ContextLength             *int64   `json:"context_length,omitempty"`
 	MaxCompletionTokens       *int64   `json:"max_completion_tokens,omitempty"`
 	SupportedInputModalities  []string `json:"supported_input_modalities,omitempty"`
@@ -80,10 +86,25 @@ type workBuddyAgentWire struct {
 	Models []string `json:"models"`
 }
 
+// workBuddyRichModelWire is one entry of /v3/config's data.models rich
+// catalog. Only the fields the plugin can act on are decoded; unknown keys
+// (promotions, tiers, related models) stay ignored on purpose.
+type workBuddyRichModelWire struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	DescriptionEn string `json:"descriptionEn"`
+	DescriptionZh string `json:"descriptionZh"`
+	Credits       string `json:"credits"`
+	Disabled      bool   `json:"disabled"`
+	ContextWindow *int64 `json:"maxInputTokens"`
+	MaxTokens     *int64 `json:"maxOutputTokens"`
+}
+
 type workBuddyLegacyModelWire struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	Description   string `json:"description"`
+	Credits       string `json:"credits"`
 	Disabled      bool   `json:"disabled"`
 	ContextWindow *int64 `json:"contextWindow"`
 	MaxTokens     *int64 `json:"maxTokens"`
@@ -93,7 +114,8 @@ func parseWorkBuddyV3Config(raw []byte) ([]modelFacts, error) {
 	var response struct {
 		Code *int `json:"code"`
 		Data *struct {
-			Agents []workBuddyAgentWire `json:"agents"`
+			Agents []workBuddyAgentWire     `json:"agents"`
+			Models []workBuddyRichModelWire `json:"models"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil {
@@ -122,11 +144,63 @@ func parseWorkBuddyV3Config(raw []byte) ([]modelFacts, error) {
 		return nil, fmt.Errorf("v3 config cli agent is missing")
 	}
 
-	models := make([]modelFacts, len(modelIDs))
-	for i, id := range modelIDs {
-		models[i].ID = id
+	// The cli agent's model list is the entitlement boundary, but it only
+	// carries IDs. The sibling rich catalog carries the per-model metadata
+	// (credits multiplier, display name, limits), so merge it in by ID.
+	// Entitlement still wins: unknown IDs never enter the list.
+	rich := make(map[string]workBuddyRichModelWire, len(response.Data.Models))
+	for _, entry := range response.Data.Models {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
+			continue
+		}
+		rich[id] = entry
+	}
+	models := make([]modelFacts, 0, len(modelIDs))
+	for _, rawID := range modelIDs {
+		id := strings.TrimSpace(rawID)
+		// A blank entitlement ID is a schema problem, not something to skip:
+		// validateModelFacts rejects it so the snapshot degrades to last-good
+		// instead of silently serving a short catalog.
+		if id == "" {
+			return nil, fmt.Errorf("v3 config cli agent model ID is empty")
+		}
+		facts := modelFacts{ID: id}
+		if entry, ok := rich[id]; ok {
+			facts.Name = strings.TrimSpace(entry.Name)
+			facts.Description = firstNonEmptyModelDescription(entry.DescriptionEn, entry.DescriptionZh)
+			facts.Credits = normalizeModelCredits(entry.Credits)
+			facts.ContextLength = entry.ContextWindow
+			facts.MaxCompletionTokens = entry.MaxTokens
+		}
+		models = append(models, facts)
 	}
 	return validateModelFacts(models)
+}
+
+func firstNonEmptyModelDescription(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+// normalizeModelCredits keeps the upstream multiplier verbatim but bounded:
+// the field is display-only, so a hostile value must not bloat the catalog or
+// the cache. Upstream formats vary ("x0.29", "x2.20 credits", "x0.00").
+func normalizeModelCredits(raw string) string {
+	value := strings.TrimSpace(raw)
+	if len(value) > maxModelCreditsBytes {
+		return ""
+	}
+	if strings.IndexFunc(value, func(r rune) bool {
+		return r == '\r' || r == '\n' || r == 0x85 || r == 0x2028 || r == 0x2029
+	}) >= 0 {
+		return ""
+	}
+	return value
 }
 
 func parseWorkBuddyLegacyModels(raw []byte) ([]modelFacts, error) {
@@ -151,7 +225,8 @@ func parseWorkBuddyLegacyModels(raw []byte) ([]modelFacts, error) {
 		models[i] = modelFacts{
 			ID:                  model.ID,
 			Name:                model.Name,
-			Description:         model.Description,
+			Description:         firstNonEmptyModelDescription(model.Description),
+			Credits:             normalizeModelCredits(model.Credits),
 			ContextLength:       model.ContextWindow,
 			MaxCompletionTokens: model.MaxTokens,
 		}
@@ -179,6 +254,7 @@ func validateModelFacts(models []modelFacts) ([]modelFacts, error) {
 	for i, model := range models {
 		model.ID = strings.TrimSpace(model.ID)
 		model.Name = strings.TrimSpace(model.Name)
+		model.Credits = normalizeModelCredits(model.Credits)
 		if model.ID == "" {
 			return nil, fmt.Errorf("model ID is empty")
 		}

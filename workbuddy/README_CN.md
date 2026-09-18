@@ -220,6 +220,39 @@ POST /cooldowns/clear   解除一个账号的冷却（auth_id），或只解除�
 
 **冷却状态同样只在插件进程内存中**：配置重载不会丢，CPA 重启后清空。
 
+## 积分倍率
+
+每个模型的积分倍率从上游同步，不再写死静态值。
+
+来源：`/v3/config` 的 `data.models` 富目录（cli agent 的 `models` 列表只是 ID，
+倍率在富目录里），legacy 端点 `/console/enterprises/personal/models` 同样带该字段。
+上游格式不统一（`x0.29` / `x2.20 credits` / `x0.00`），插件原样保留字符串，
+同时解析出数值供展示与预估。
+
+优先级：**本地固定 > 上游同步**。本地固定有两个入口：
+
+1. YAML `model_credits`（持久化，配置重载时权威）
+
+```yaml
+model_credits:
+  glm-5.2: "x0.79 credits"
+  hy3: x0.00        # 促销期固定为免费
+  deep-model: null  # 显式取消固定，回到上游值
+```
+
+2. 面板「倍率」按钮（进程内存，CPA 重启后恢复）
+
+```text
+GET  /models/credits          全部已知倍率及其来源
+POST /models/credits          固定或取消固定一个 {"model":"glm-5.2","credits":"x0.40"}
+```
+
+`credits` 留空即取消固定，回到上游值。
+
+**倍率传不到 CPA 侧**：`pluginapi.ModelInfo` 没有成本/倍率字段，所以 CPA 的计费
+拿不到它。倍率只服务于插件自身——面板展示、以及配合模型维度冷却做额度预估。
+将来要参与 CPA 计费，得等上游 SDK 加字段。
+
 Cache 根目录由 `os.UserConfigDir()` 计算，不硬编码平台路径：
 
 ```plaintext

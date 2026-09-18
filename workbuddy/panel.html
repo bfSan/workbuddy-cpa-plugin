@@ -229,6 +229,13 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
       <input id="modelAddInput" class="field-input" type="text" placeholder="添加自定义模型 ID" aria-label="添加自定义模型 ID">
       <button type="button" class="ftag" onclick="addModel()">添加</button>
     </div>
+    <div id="creditsEditRow" style="display:none;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+      <span class="mut" id="creditsEditTitle" style="font-size:12px"></span>
+      <input id="creditsEditInput" class="field-input" type="text" placeholder="如 x0.29，留空恢复上游值" aria-label="积分倍率">
+      <button type="button" class="ftag" onclick="saveModelCredits()">保存</button>
+      <button type="button" class="ftag" onclick="closeCreditsEditor()">取消</button>
+      <span class="mut" id="creditsEditHint" style="font-size:11px;flex:1 1 100%"></span>
+    </div>
   </div>
   <footer class="footer">当前出口 IP：<strong id="egressIp" role="status">检测中…</strong></footer>
 </div>
@@ -781,10 +788,22 @@ function renderModels(){
     const tags=[];
     if(m.custom) tags.push(`<span class="badge">自定义</span>`);
     if(Number(m.coolingAccounts)>0) tags.push(`<span class="badge cooling" title="${Number(m.coolingAccounts)} 个账号的这个模型正在冷却">冷却 ${Number(m.coolingAccounts)}</span>`);
+    const cd=m.credits||{};
+    const cdValue=String(cd.value||"");
+    if(cdValue){
+      const pinned=cd.source==="override";
+      const rate=Number(cd.rate||0);
+      // Upstream reports promotions as x0.00; call that out instead of
+      // rendering a bare zero that reads like "unknown".
+      const free=cdValue!==""&&rate===0;
+      const label=free?"免费":esc(cdValue.replace(/^x/i,"").replace(/\s*credits?$/i,""))+"x";
+      tags.push(`<span class="badge ${free?"ok":""}" title="${pinned?"本地固定":"上游同步"}：${esc(cdValue)}">${label}</span>`);
+    }
     return `<div class="model-row">
       <span class="model-id">${esc(id)}</span>
       <span class="model-name mut">${esc(name)}</span>
       <span class="model-actions">
+        <button type="button" class="ftag" onclick="openCreditsEditor('${esc(id)}')" aria-label="设置 ${esc(id)} 的积分倍率" title="设置积分倍率">倍率</button>
         <button type="button" class="ftag" onclick="moveModel('${esc(id)}',-1)" aria-label="上移 ${esc(id)}"${i===0?" disabled":""}>↑</button>
         <button type="button" class="ftag" onclick="moveModel('${esc(id)}',1)" aria-label="下移 ${esc(id)}"${i===lastModels.length-1?" disabled":""}>↓</button>
         <button type="button" class="ftag" onclick="toggleModel('${esc(id)}')">${m.custom?"移除":"隐藏"}</button>
@@ -821,6 +840,43 @@ async function addModel(){
   if(!id){ toast("请输入模型 ID","warn"); return; }
   input.value="";
   await modelAction("add",id);
+}
+// 积分倍率：本地固定优先于上游同步，留空保存即恢复上游值。
+let creditsEditModel="";
+function openCreditsEditor(id){
+  const current=lastModels.find(m=>String(m.id)===String(id));
+  const cd=(current&&current.credits)||{};
+  creditsEditModel=String(id||"");
+  const row=document.getElementById("creditsEditRow");
+  const title=document.getElementById("creditsEditTitle");
+  const hint=document.getElementById("creditsEditHint");
+  const input=document.getElementById("creditsEditInput");
+  if(!row||!input) return;
+  title.textContent=`积分倍率 · ${creditsEditModel}`;
+  hint.textContent=(cd.value?`当前 ${cd.value}（${cd.source==="override"?"本地固定":"上游同步"}）`:"上游未上报")+"。留空保存即恢复上游值。";
+  input.value=cd.source==="override"?String(cd.value||""):"";
+  row.style.display="flex";
+  input.focus();
+}
+function closeCreditsEditor(){
+  creditsEditModel="";
+  const row=document.getElementById("creditsEditRow");
+  if(row) row.style.display="none";
+}
+async function saveModelCredits(){
+  const input=document.getElementById("creditsEditInput");
+  const id=creditsEditModel;
+  if(!id){ closeCreditsEditor(); return; }
+  const value=String((input&&input.value)||"").trim();
+  try{
+    await api("/models/credits",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({model:id,credits:value})});
+    closeCreditsEditor();
+    await loadModels(false);
+    toast(value?"倍率已固定":"已恢复上游倍率",value?"ok":"warn",value?`${id} → ${value}`:`${id}`);
+  }catch(e){
+    toast("倍率设置失败","err",String(e&&e.message||e));
+  }
 }
 async function api(path, opts={}){
   const k=getKey();

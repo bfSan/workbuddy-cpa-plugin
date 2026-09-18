@@ -603,7 +603,7 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 	// back to polling every plugin — first Handled=true wins. Only claim files
 	// whose declared type matches us — or, for type-less legacy files, when the
 	// host already routed this to us or the filename carries our prefix.
-	// Symmetric with the qoderwork plugin's guard (commit 7b776a9).
+	// Keeps sibling providers' auth files out of our parse path.
 	var probeType struct {
 		Type string `json:"type"`
 	}

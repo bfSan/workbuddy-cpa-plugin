@@ -335,7 +335,7 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 			serving := modelFacts{ID: id}
 			models[i] = modelInfoFromSources(serving, matchModelsDevRecord(id, metadata.cache.Records))
 		}
-		snapshot.Models = models
+		snapshot.Models = applyModelOverlay(models, loadedModelOverlayForRead())
 		if metadata.source == modelSourceFresh {
 			snapshot.State = modelReady
 			snapshot.ErrorCode = modelErrorNone
@@ -420,7 +420,7 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	for i, model := range modelSelection.cache.Models {
 		models[i] = modelInfoFromSources(model, matchModelsDevRecord(model.ID, metadata.cache.Records))
 	}
-	snapshot.Models = models
+	snapshot.Models = applyModelOverlay(models, loadedModelOverlayForRead())
 	if modelSelection.source == modelSourceFresh && metadata.source == modelSourceFresh {
 		snapshot.State = modelReady
 		snapshot.ErrorCode = modelErrorNone

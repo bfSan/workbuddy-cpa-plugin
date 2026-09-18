@@ -158,6 +158,33 @@ WorkBuddy catalog cache，也不会删除已有 cache。models.dev metadata 仍�
    提供的 serving 字段。
 3. 每项来源都先校验，再替换 persistent cache，最后发布 immutable 的账号模型目录。
 
+## 模型列表调整（插件面板 / 管理 API）
+
+除 YAML `models` 的完整覆盖之外，插件还提供一层**叠加式调整**，可以在保留上游动态
+发现的前提下隐藏、排序或追加模型：
+
+| 字段 | 作用 |
+|---|---|
+| `hide` | 从生效列表中剔除指定模型 ID |
+| `order` | 把指定模型 ID 按给定顺序钉到列表前面 |
+| `add` | 追加上游未上报的自定义模型 ID |
+
+三条规则可以组合：先 `hide`，再按 `order` 排，最后追加 `add`。
+`hide` 优先于 `add`——同一个 ID 同时出现在两边时以隐藏为准。
+
+管理 API（路径前缀 `/v0/management/plugins/workbuddy`）：
+
+```text
+GET  /models          生效列表、来源、当前 overlay
+PUT  /models          整体替换 overlay  {"overlay":{"hide":[...],"order":[...],"add":[...]}}
+POST /models/action   单条编辑 {"action":"hide|restore|move|add","id":"...","offset":-1|1}
+```
+
+插件面板的「模型列表」区块直接调用这些接口，支持隐藏、上移、下移和添加自定义模型。
+
+**overlay 只保存在插件进程内存中**：配置重载不会丢，CPA 重启后会恢复默认。
+需要长期固定的模型清单请写进 YAML `models`，那是持久化的完整覆盖。
+
 Cache 根目录由 `os.UserConfigDir()` 计算，不硬编码平台路径：
 
 ```plaintext

@@ -400,7 +400,7 @@ func TestFetchWorkBuddyCatalogRoutesByJWTRealm(t *testing.T) {
 				"Accept":          "application/json",
 				"Origin":          tt.origin,
 				"Referer":         tt.origin + "/",
-				"User-Agent":      clientUA,
+				"User-Agent":      workBuddyDesktopUA,
 				"X-User-Id":       "uid-1",
 				"X-Enterprise-Id": "enterprise-1",
 				"X-Product":       "SaaS",
@@ -590,55 +590,48 @@ func syntheticStoredAuth(t *testing.T, realm workBuddyRealm) *storedAuth {
 	}
 }
 
-// TestParseWorkBuddyV3ConfigCompletesPreset: an entitled preset whose concrete
-// model is missing upstream is completed, not dropped — the account is entitled
-// to the preset, so withholding the model behind it silently shrinks the list.
-func TestParseWorkBuddyV3ConfigCompletesPreset(t *testing.T) {
-	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a", "concrete-b"}})
-	defer restore()
+// A preset is served as itself. It is a real upstream model with its own
+// credits, not an alias to be rewritten into some concrete model.
+func TestParseWorkBuddyV3ConfigServesPresetAsItself(t *testing.T) {
 	raw := []byte(`{"code":0,"data":{
 	  "agents":[{"name":"cli","models":["preset-a","serve-chat"]}],
-	  "models":[{"id":"preset-a"},{"id":"serve-chat"}]}}`)
+	  "models":[{"id":"preset-a","name":"Preset","credits":"x0.21"},{"id":"serve-chat"}]}}`)
 	got, err := parseWorkBuddyV3Config(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 3 || got[0].ID != "preset-a" || got[1].ID != "serve-chat" || got[2].ID != "concrete-a" {
-		t.Fatalf("preset should be completed with its concrete model, got %#v", got)
+	if len(got) != 2 || got[0].ID != "preset-a" || got[1].ID != "serve-chat" {
+		t.Fatalf("a preset must be served under its own ID, got %#v", got)
+	}
+	if got[0].Credits != "x0.21" {
+		t.Fatalf("the preset's own multiplier must be kept: %#v", got[0])
 	}
 }
 
-// Completion stops at the first configured target that is already present, so
-// a preset never multiplies the catalog.
-func TestParseWorkBuddyV3ConfigCompletesPresetOnce(t *testing.T) {
-	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a", "concrete-b"}})
-	defer restore()
-	raw := []byte(`{"code":0,"data":{
-	  "agents":[{"name":"cli","models":["preset-a"]}],
-	  "models":[{"id":"preset-a"},{"id":"concrete-b"}]}}`)
-	got, err := parseWorkBuddyV3Config(raw)
-	if err != nil {
+// Catalog discovery identifies as the desktop client, because upstream tiers
+// the catalog by User-Agent: the CLI identity is served a narrow list that
+// omits the presets and the default model. Without this the rich entries never
+// appear and the served catalog silently shrinks.
+func TestFetchWorkBuddyCatalogUsesDesktopIdentity(t *testing.T) {
+	var sawUA []string
+	do := func(req *http.Request, _ string) (*hostHTTPResponse, error) {
+		sawUA = append(sawUA, req.Header.Get("User-Agent"))
+		return &hostHTTPResponse{
+			StatusCode: http.StatusOK,
+			Headers:    http.Header{},
+			Body:       []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-chat"]}],"models":[{"id":"serve-chat"}]}}`),
+		}, nil
+	}
+	sa := syntheticStoredAuth(t, workBuddyRealmCN)
+	if _, err := fetchWorkBuddyCatalog(sa, "", do); err != nil {
 		t.Fatal(err)
 	}
-	// concrete-b is only in the rich catalog, not in entitlement, so completion
-	// still adds the preset's first concrete model. It lands right after the
-	// entitlement entries, ahead of the rich-only ones.
-	if len(got) != 3 || got[0].ID != "preset-a" || got[1].ID != "concrete-a" || got[2].ID != "concrete-b" {
-		t.Fatalf("expected one completion, got %#v", got)
+	if len(sawUA) == 0 {
+		t.Fatal("no request was made")
 	}
-}
-
-// With no mapping configured the plugin must not guess: a preset is served as
-// itself rather than being rewritten to some guessed concrete model.
-func TestParseWorkBuddyV3ConfigWithoutPresetTargetsKeepsAlias(t *testing.T) {
-	raw := []byte(`{"code":0,"data":{
-	  "agents":[{"name":"cli","models":["preset-a","serve-chat"]}],
-	  "models":[{"id":"preset-a"},{"id":"serve-chat"}]}}`)
-	got, err := parseWorkBuddyV3Config(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0].ID != "preset-a" {
-		t.Fatalf("alias must be kept when no mapping is configured, got %#v", got)
+	for _, ua := range sawUA {
+		if ua != workBuddyDesktopUA {
+			t.Fatalf("catalog discovery User-Agent = %q, want the desktop identity %q", ua, workBuddyDesktopUA)
+		}
 	}
 }

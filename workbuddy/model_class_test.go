@@ -62,136 +62,16 @@ func TestModelKindLabel_HasLabelForEveryKind(t *testing.T) {
 	}
 }
 
-// TestUpgradeModelID_PrefersConfiguredConcrete: when a preset has a concrete
-// model configured and present, the served ID is that model.
-func TestUpgradeModelID_PrefersConfiguredConcrete(t *testing.T) {
-	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a", "concrete-b"}})
-	defer restore()
-	present := map[string]struct{}{"preset-a": {}, "concrete-a": {}}
-	if got := upgradeModelID("preset-a", present); got != "concrete-a" {
-		t.Fatalf("got %q, want concrete-a", got)
-	}
-	// First configured target wins when several are present.
-	both := map[string]struct{}{"concrete-a": {}, "concrete-b": {}}
-	if got := upgradeModelID("preset-a", both); got != "concrete-a" {
-		t.Fatalf("got %q, want the first configured target", got)
-	}
-}
-
-// A preset with no configured target must be served as itself.
-func TestUpgradeModelID_KeepsAliasWhenNoTarget(t *testing.T) {
-	if got := upgradeModelID("preset-a", map[string]struct{}{"preset-a": {}}); got != "preset-a" {
-		t.Fatalf("got %q, want the alias itself", got)
-	}
-	if got := upgradeModelID("serve-chat", nil); got != "serve-chat" {
-		t.Fatalf("a normal ID must pass through, got %q", got)
-	}
-	if got := upgradeModelID("", nil); got != "" {
-		t.Fatalf("blank must stay blank, got %q", got)
-	}
-}
-
-// The upgrade is case-insensitive so a hand-added alias still upgrades.
-func TestUpgradeModelID_CaseInsensitive(t *testing.T) {
-	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a"}})
-	defer restore()
-	if got := upgradeModelID("  PRESET-A ", map[string]struct{}{"concrete-a": {}}); got != "concrete-a" {
-		t.Fatalf("got %q, want concrete-a", got)
-	}
-}
-
-// Complete is additive and idempotent: running it twice must not grow the list.
-func TestCompletePresetModels_Idempotent(t *testing.T) {
-	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a"}})
-	defer restore()
-	once := completePresetModels([]string{"preset-a", "serve-chat"})
-	twice := completePresetModels(once)
-	if len(once) != 3 || len(twice) != 3 {
-		t.Fatalf("complete must be idempotent, got %#v then %#v", once, twice)
-	}
-}
-
-func TestServedPresetAlias_NamesTheAlias(t *testing.T) {
-	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a"}})
-	defer restore()
-	if got := servedPresetAlias("concrete-a"); got != "preset-a" {
-		t.Fatalf("got %q, want preset-a", got)
-	}
-	if got := servedPresetAlias("serve-chat"); got != "" {
-		t.Fatalf("a non-preset ID should have no alias, got %q", got)
-	}
-}
-
-// The mapping must come from config, not from code: production files are
-// contract-tested against hard-coded model IDs, so a preset alias is only
-// resolved when the operator configured it.
-func TestParseFeatureRuntime_PresetModels(t *testing.T) {
-	cfg, err := parseFeatureRuntime([]byte("preset_models:\n  preset-a: concrete-a\n  preset-b: [concrete-b, concrete-c]\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := cfg.presetTargets["preset-a"]; len(got) != 1 || got[0] != "concrete-a" {
-		t.Fatalf("preset-a = %#v", got)
-	}
-	if got := cfg.presetTargets["preset-b"]; len(got) != 2 || got[0] != "concrete-b" {
-		t.Fatalf("preset-b = %#v", got)
-	}
-}
-
-func TestParseFeatureRuntime_PresetModelsRejectsBadShape(t *testing.T) {
-	bad := []string{
-		"preset_models: [a]\n",
-		"preset_models:\n  preset-a:\n",
-		"preset_models:\n  preset-a: []\n",
-		"preset_models:\n  preset-a: [x, x]\n",
-		"preset_models:\n  \"\": x\n",
-		"preset_models:\n  preset-a: {k: v}\n",
-	}
-	for _, raw := range bad {
-		if _, err := parseFeatureRuntime([]byte(raw)); err == nil {
-			t.Fatalf("expected %q to be rejected", raw)
-		}
-	}
-}
-
-// Unset means "serve the alias as itself" — no guessing.
-func TestParseFeatureRuntime_PresetModelsUnset(t *testing.T) {
-	cfg, err := parseFeatureRuntime(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.presetTargets) != 0 {
-		t.Fatalf("unset preset_models should be empty, got %#v", cfg.presetTargets)
-	}
-	if got := servedPresetAlias("preset-a"); got != "" {
-		t.Fatalf("no mapping means no alias, got %q", got)
-	}
-}
-
-// Completion is a no-op when entitlement already carries a concrete model:
-// `present` is the entitlement list, so this is decided before the rich
-// catalog is merged in.
-func TestCompletePresetModels_NoopWhenEntitled(t *testing.T) {
-	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a", "concrete-b"}})
-	defer restore()
-	got := completePresetModels([]string{"preset-a", "concrete-b"})
-	if len(got) != 2 || got[0] != "preset-a" || got[1] != "concrete-b" {
-		t.Fatalf("entitled concrete model should make completion a no-op, got %#v", got)
-	}
-}
-
 // A preset carries its own upstream credits and capabilities, so it is
-// forwarded as itself: rewriting it to the concrete model behind it would
+// forwarded as itself: rewriting it to some concrete model behind it would
 // change both the response and the billed rate.
 func TestResolveUpstreamModel_KeepsPresetAlias(t *testing.T) {
-	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a"}})
-	defer restore()
-	if got := resolveUpstreamModel("preset-a", nil); got != "preset-a" {
+	if got := resolveUpstreamModel("fast-model", nil); got != "fast-model" {
 		t.Fatalf("got %q, want the alias itself", got)
 	}
 	// A host-supplied oauth-model-alias still wins: it is an explicit override.
-	defer setModelAliasForTest(map[string]string{"preset-a": "host-target"})()
-	if got := resolveUpstreamModel("preset-a", nil); got != "host-target" {
+	defer setModelAliasForTest(map[string]string{"fast-model": "host-target"})()
+	if got := resolveUpstreamModel("fast-model", nil); got != "host-target" {
 		t.Fatalf("host alias should win, got %q", got)
 	}
 	if got := resolveUpstreamModel("serve-chat", nil); got != "serve-chat" {
@@ -199,14 +79,27 @@ func TestResolveUpstreamModel_KeepsPresetAlias(t *testing.T) {
 	}
 }
 
-// The served catalog must list a preset under its own ID so the gateway can
-// route it, rather than renaming it away.
-func TestDiscoveredModelInfosKeepsPresetIDs(t *testing.T) {
-	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a"}})
-	defer restore()
+// The served catalog must carry each entry's own ID through unchanged. The
+// presets are real upstream models, not aliases to be rewritten.
+func TestDiscoveredModelInfosKeepsIDs(t *testing.T) {
 	got := discoveredModelInfos([]modelFacts{{ID: "preset-a"}, {ID: "concrete-a"}}, nil)
 	if len(got) != 2 || got[0].ID != "preset-a" || got[1].ID != "concrete-a" {
-		t.Fatalf("presets must be served as themselves, got %#v", got)
+		t.Fatalf("catalog IDs must pass through unchanged, got %#v", got)
+	}
+}
+
+// isPresetModelID is shape matching, so a preset the plugin has never seen is
+// still recognised as one.
+func TestIsPresetModelID_ShapeMatching(t *testing.T) {
+	for _, id := range []string{"fast-model", "balanced-model", "deep-model", "some-new-model"} {
+		if !isPresetModelID(id) {
+			t.Errorf("isPresetModelID(%q) = false, want true", id)
+		}
+	}
+	for _, id := range []string{"hy3", "auto", "default", "", "model"} {
+		if isPresetModelID(id) {
+			t.Errorf("isPresetModelID(%q) = true, want false", id)
+		}
 	}
 }
 
@@ -220,53 +113,5 @@ func setModelAliasForTest(byAlias map[string]string) func() {
 		modelAliasCache.Lock()
 		modelAliasCache.byAlias = prev
 		modelAliasCache.Unlock()
-	}
-}
-
-// The CN cli agent is entitled to "auto" while upstream serves that model as
-// "default". Only one spelling used to be routable, so both fold to one ID.
-func TestCanonicalModelID_FoldsAutoOntoDefault(t *testing.T) {
-	for _, in := range []string{"auto", "Auto", "  AUTO "} {
-		if got := canonicalModelID(in); got != "default" {
-			t.Fatalf("canonicalModelID(%q) = %q, want default", in, got)
-		}
-	}
-	if got := canonicalModelID("hy3"); got != "hy3" {
-		t.Fatalf("a normal ID must pass through, got %q", got)
-	}
-	if got := canonicalModelID(""); got != "" {
-		t.Fatalf("blank must stay blank, got %q", got)
-	}
-}
-
-// The entitlement "auto" must land in the catalog as the ID the gateway serves.
-func TestParseWorkBuddyV3ConfigCanonicalizesAuto(t *testing.T) {
-	raw := []byte(`{"code":0,"data":{
-	  "agents":[{"name":"cli","models":["auto","serve-chat"]}],
-	  "models":[{"id":"default","name":"Auto","credits":"x0.50"},{"id":"serve-chat"}]}}`)
-	got, err := parseWorkBuddyV3Config(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0].ID != "default" || got[1].ID != "serve-chat" {
-		t.Fatalf("auto should fold onto default, got %#v", got)
-	}
-	// The merged rich metadata still lands on the canonical ID.
-	if got[0].Name != "Auto" || got[0].Credits != "x0.50" {
-		t.Fatalf("rich metadata not merged onto the canonical ID: %#v", got[0])
-	}
-}
-
-// "auto" is only meaningful as the default model: forwarding it must reach the
-// same upstream model the catalog serves, not a nonexistent "auto".
-func TestResolveUpstreamModel_FoldsAutoOntoDefault(t *testing.T) {
-	if got := resolveUpstreamModel("auto", nil); got != "default" {
-		t.Fatalf("got %q, want default", got)
-	}
-	if got := resolveUpstreamModel("default", nil); got != "default" {
-		t.Fatalf("got %q, want default", got)
-	}
-	if got := resolveUpstreamModel("hy3", nil); got != "hy3" {
-		t.Fatalf("got %q, want hy3", got)
 	}
 }

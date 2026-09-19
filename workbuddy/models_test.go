@@ -18,16 +18,14 @@ func TestWBModelsReturnsOnlyAutoDefaultMetadata(t *testing.T) {
 	if len(models) != 1 {
 		t.Fatalf("len(wbModels()) = %d, want 1", len(models))
 	}
-	// The default model is advertised under the ID the catalog serves, not
-	// under the desktop's "auto" spelling.
 	want := pluginapi.ModelInfo{
-		ID:                         "default",
-		Name:                       "default",
+		ID:                         "auto",
+		Name:                       "auto",
 		OwnedBy:                    providerName,
 		SupportedGenerationMethods: []string{"chat"},
 	}
 	if !reflect.DeepEqual(models[0], want) {
-		t.Fatalf("default metadata = %#v, want %#v", models[0], want)
+		t.Fatalf("auto metadata = %#v, want %#v", models[0], want)
 	}
 }
 
@@ -233,7 +231,7 @@ func TestModelForAuthFailedAndNotStartedReturnEmptySuccess(t *testing.T) {
 	})
 }
 
-func TestModelForAuthStaticStaysDefaultWithoutRuntimeBootstrap(t *testing.T) {
+func TestModelForAuthStaticRemainsAutoWithoutRuntimeBootstrap(t *testing.T) {
 	runtime := installModelStatesForTest(t, map[string]modelReadinessState{"dynamic-auth": modelReady})
 	snapshot := runtime.snapshotForAuthID("dynamic-auth")
 	snapshot.Models = []pluginapi.ModelInfo{defaultModelInfo("dynamic-only", "Dynamic Only")}
@@ -245,7 +243,7 @@ func TestModelForAuthStaticStaysDefaultWithoutRuntimeBootstrap(t *testing.T) {
 			t.Fatal(err)
 		}
 		resp := decodeModelResponse(t, raw)
-		if len(resp.Models) != 1 || resp.Models[0].ID != "default" {
+		if len(resp.Models) != 1 || resp.Models[0].ID != "auto" {
 			t.Fatalf("static model response = %#v", resp)
 		}
 	}

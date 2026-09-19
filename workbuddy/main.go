@@ -85,8 +85,14 @@ const (
 	upstreamBaseCN = "https://copilot.tencent.com"
 	// Global chat/auth gateway (iss = workbuddy.ai realm). APISIX on
 	// copilot.tencent.com rejects Global JWTs with 401; must use workbuddy.ai.
-	upstreamBaseGlobal  = "https://www.workbuddy.ai"
-	clientUA            = "CLI/2.63.2 CodeBuddy/2.63.2"
+	upstreamBaseGlobal = "https://www.workbuddy.ai"
+	clientUA           = "CLI/2.63.2 CodeBuddy/2.63.2"
+	// workBuddyDesktopUA identifies as the WorkBuddy desktop client. Upstream
+	// tiers its catalog by User-Agent: a CLI identity is served a narrow list
+	// that omits the fast/balanced/deep presets and the default model, while the
+	// desktop identity receives the full catalog. Catalog discovery therefore
+	// has to present the desktop identity or those models stay invisible.
+	workBuddyDesktopUA  = "WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0"
 	originReferer       = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
 
@@ -359,7 +365,6 @@ func wbRegistration() registration {
 				{Name: "enterprise_credits", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Probe strict CN enterprise credits before personal resource packages (default false; Global unchanged)."},
 				{Name: "management_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Bearer key enforced by WorkBuddy for mutating management endpoints; also env WB_MANAGEMENT_KEY."},
 				{Name: "proxy-url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional plugin-level proxy for all WorkBuddy HTTP traffic. Supports http, https, socks5, and socks5h; empty preserves existing routing and host-bridged calls inherit CPA. Invalid settings fail closed. Explicit proxy traffic bypasses CPA request-log."},
-				{Name: "preset_models", Type: pluginapi.ConfigFieldTypeObject, Description: "Optional map of desktop preset alias (fast/balanced/deep style) to the concrete model ID(s) behind it. An assigned preset is served as its concrete model, and is also completed into the catalog when entitlement omits it; unassigned aliases are served as themselves."},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick the panel-selected account, with non-exhausted fallback). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},

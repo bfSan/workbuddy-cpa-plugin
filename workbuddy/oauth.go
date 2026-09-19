@@ -115,7 +115,7 @@ func oauthProfileForMode(mode string) oauthRequestProfile {
 		return oauthRequestProfile{
 			mode:      oauthClientModeWorkBuddy,
 			stateURL:  upstreamBaseCN + "/v2/plugin/auth/state?platform=workbuddy",
-			userAgent: "WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0",
+			userAgent: workBuddyDesktopUA,
 			origin:    "https://www.workbuddy.cn",
 		}
 	}

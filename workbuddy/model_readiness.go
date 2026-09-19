@@ -673,9 +673,6 @@ func (r *modelRuntime) commitFeatureRuntime(next *featureRuntimeConfig) uint64 {
 	// Config is the persistent source for pinned multipliers; apply it on every
 	// commit so a reload is authoritative.
 	syncConfiguredCredits(snapshot.configuredCredits)
-	// Preset aliases resolve through config, so publish the mapping wherever
-	// the catalog is assembled rather than keeping a second copy.
-	setPresetTargets(snapshot.presetTargets)
 	r.configCommitMu.Lock()
 	featureRuntime.Store(&snapshot)
 	generation := r.configGeneration.Add(1)

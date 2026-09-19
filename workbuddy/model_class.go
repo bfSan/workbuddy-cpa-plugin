@@ -23,7 +23,6 @@ package main
 
 import (
 	"strings"
-	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -43,25 +42,17 @@ const (
 // Internal helpers the gateway advertises but that never serve chat: the lite
 // entry backs title generation and compaction, and default/primary are desktop
 // presets the chat endpoint does not resolve.
-//
-// "default" is excluded from that list on purpose. The CN cli agent's
-// entitlement carries "auto" as its entry for the default model, and the
-// plugin's own static list names it "auto"; upstream resolves it as "default".
-// Both spellings therefore have to reach the gateway rather than be filtered
-// as a desktop preset.
 var nonChatModelIDs = map[string]struct{}{
 	"lite":          {},
 	"default-model": {},
 	"primary-model": {},
 }
 
-// presetModelAliases are the desktop's fast/balanced/deep style presets. They
-// are chat-usable in the app — the desktop resolves them client-side — so they
-// are served, and the served ID is upgraded to the concrete model behind them.
-//
-// The alias set is shape-matched rather than enumerated so a new preset from
-// upstream is recognised without a code change.
-// presetSuffixes are the shapes desktop preset aliases take.
+// presetSuffixes are the shapes the desktop's preset aliases take. They are
+// served and routed as themselves: upstream bills them at their own multiplier
+// (the CN catalog lists fast x0.21, balanced x0.65, deep x1.20) and resolves
+// them server-side, so rewriting one to a concrete model would change both the
+// response and the billed rate.
 var presetSuffixes = []string{"-model"}
 
 // isPresetModelID reports whether an ID is a desktop preset alias. Shape
@@ -78,118 +69,6 @@ func isPresetModelID(id string) bool {
 		}
 	}
 	return false
-}
-
-// presetTargets is the operator-owned mapping from a preset alias to the
-// concrete model IDs behind it. It is empty by default, which means "serve the
-// alias as itself": the plugin never guesses which concrete model a preset
-// resolves to, because guessing silently changes both the response and the
-// billed multiplier.
-var (
-	presetTargetsMu sync.RWMutex
-	presetTargets   = map[string][]string{}
-)
-
-// setPresetTargetsForTest installs a preset mapping and returns a restore func.
-func setPresetTargetsForTest(targets map[string][]string) func() {
-	presetTargetsMu.Lock()
-	prev := presetTargets
-	presetTargets = targets
-	presetTargetsMu.Unlock()
-	return func() {
-		presetTargetsMu.Lock()
-		presetTargets = prev
-		presetTargetsMu.Unlock()
-	}
-}
-
-func loadedPresetTargets() map[string][]string {
-	presetTargetsMu.RLock()
-	defer presetTargetsMu.RUnlock()
-	if len(presetTargets) == 0 {
-		return nil
-	}
-	out := make(map[string][]string, len(presetTargets))
-	for alias, ids := range presetTargets {
-		out[alias] = append([]string(nil), ids...)
-	}
-	return out
-}
-
-func anyPresent(ids []string, present map[string]struct{}) bool {
-	for _, id := range ids {
-		if _, exists := present[id]; exists {
-			return true
-		}
-	}
-	return false
-}
-
-// completePresetModels appends the concrete model behind any entitled preset
-// that the catalog is otherwise missing, so an account entitled to a preset is
-// not silently served a shorter catalog. It is additive and never invents a
-// model: a preset with no configured concrete model keeps just the preset.
-func completePresetModels(ids []string) []string {
-	targets := loadedPresetTargets()
-	if len(ids) == 0 || len(targets) == 0 {
-		return ids
-	}
-	present := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		present[strings.TrimSpace(id)] = struct{}{}
-	}
-	out := append([]string(nil), ids...)
-	for _, id := range ids {
-		alias := strings.ToLower(strings.TrimSpace(id))
-		candidates, ok := targets[alias]
-		if !ok {
-			continue
-		}
-		// The preset is already backed by one of its concrete models, so there
-		// is nothing to complete. Adding another would grow the catalog for no
-		// routing benefit.
-		if anyPresent(candidates, present) {
-			continue
-		}
-		first := candidates[0]
-		present[first] = struct{}{}
-		out = append(out, first)
-	}
-	return out
-}
-
-// upgradeModelID is retained for callers that request the rename explicitly.
-// The catalog no longer applies it: a preset carries its own upstream credits
-// and capabilities, so rewriting it to the concrete model behind it would
-// change both the response and the billed rate. completePresetModels is what
-// widens the catalog.
-func upgradeModelID(id string, present map[string]struct{}) string {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return ""
-	}
-	for _, candidate := range loadedPresetTargets()[strings.ToLower(id)] {
-		if _, exists := present[candidate]; exists {
-			return candidate
-		}
-	}
-	return id
-}
-
-// upgradeModelIDs applies upgradeModelID to a whole catalog.
-func upgradeModelIDs(ids []string) []string {
-	if len(ids) == 0 {
-		return nil
-	}
-	present := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		present[strings.TrimSpace(id)] = struct{}{}
-	}
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, upgradeModelID(id, present))
-	}
-	return out
 }
 
 // default-1.x style desktop presets: the chat endpoint reports "service info
@@ -283,9 +162,8 @@ func configuredModelFacts(ids []string) []modelFacts {
 	return out
 }
 
-// discoveredModelInfos turns a snapshot's model facts into the served catalog.
-// Preset aliases are upgraded in place here so every consumer — the host's
-// model list, the panel and routing — sees the same concrete IDs.
+// discoveredModelInfos turns a snapshot's model facts into the served catalog,
+// carrying each entry's own ID through unchanged.
 func discoveredModelInfos(models []modelFacts, records map[string]modelFacts) []pluginapi.ModelInfo {
 	if len(models) == 0 {
 		return []pluginapi.ModelInfo{}
@@ -299,63 +177,4 @@ func discoveredModelInfos(models []modelFacts, records map[string]modelFacts) []
 		out = append(out, modelInfoFromSources(model, matchModelsDevRecord(id, records)))
 	}
 	return out
-}
-
-// servedPresetAlias reports the preset alias whose upgrade produces id, or ""
-// when the ID is served as itself.
-func servedPresetAlias(id string) string {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return ""
-	}
-	for alias, candidates := range loadedPresetTargets() {
-		for _, candidate := range candidates {
-			if candidate == id {
-				return alias
-			}
-		}
-	}
-	return ""
-}
-
-// setPresetTargets publishes the operator-configured preset mapping. It is the
-// only writer: config is the single source, and callers read a copy.
-func setPresetTargets(targets map[string][]string) {
-	presetTargetsMu.Lock()
-	defer presetTargetsMu.Unlock()
-	if len(targets) == 0 {
-		presetTargets = map[string][]string{}
-		return
-	}
-	next := make(map[string][]string, len(targets))
-	for alias, ids := range targets {
-		next[alias] = append([]string(nil), ids...)
-	}
-	presetTargets = next
-}
-
-// presetTargetFor returns the concrete model a preset alias is forwarded to,
-// or the ID itself when no mapping is configured. Unlike upgradeModelID it does
-// not require the target to be present in a catalog: callers that have no
-// catalog in hand (the executor) rely on downstream validation instead.
-func presetTargetFor(id string) string {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return ""
-	}
-	targets := loadedPresetTargets()[strings.ToLower(id)]
-	if len(targets) == 0 {
-		return id
-	}
-	return targets[0]
-}
-
-// canonicalModelID folds the desktop's "auto" entry onto the upstream ID the
-// gateway resolves it to. The CN cli agent is entitled to "auto" while upstream
-// serves that model as "default", so only one spelling was routable.
-func canonicalModelID(id string) string {
-	if strings.EqualFold(strings.TrimSpace(id), "auto") {
-		return "default"
-	}
-	return id
 }

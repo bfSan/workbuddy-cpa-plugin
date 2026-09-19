@@ -152,11 +152,6 @@ func parseWorkBuddyV3Config(raw []byte) ([]modelFacts, error) {
 		}
 	}
 
-	// A preset whose concrete model is missing from entitlement is completed
-	// before the catalog is built: the account is entitled to the preset, so
-	// withholding the model behind it would silently shrink the catalog.
-	modelIDs = completePresetModels(modelIDs)
-
 	// The catalog is the union of entitlement and rich entries, not just the
 	// former. The cli agent's list is narrower than what the account can
 	// actually call — several chat models appear only in the rich catalog — and
@@ -165,7 +160,7 @@ func parseWorkBuddyV3Config(raw []byte) ([]modelFacts, error) {
 	entitled := make(map[string]struct{}, len(modelIDs))
 	models := make([]modelFacts, 0, len(modelIDs)+len(response.Data.Models))
 	for _, rawID := range modelIDs {
-		id := canonicalModelID(strings.TrimSpace(rawID))
+		id := strings.TrimSpace(rawID)
 		// A duplicate entitlement ID is still a schema problem: validateModelFacts
 		// would reject it, and serving a quietly de-duplicated list hides that.
 		if _, dup := entitled[id]; dup {
@@ -175,7 +170,7 @@ func parseWorkBuddyV3Config(raw []byte) ([]modelFacts, error) {
 		models = append(models, modelFacts{ID: id})
 	}
 	for _, entry := range response.Data.Models {
-		id := canonicalModelID(strings.TrimSpace(entry.ID))
+		id := strings.TrimSpace(entry.ID)
 		if id == "" || entry.Disabled {
 			continue
 		}
@@ -340,6 +335,12 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 			return nil, &modelSourceError{Kind: modelSourceSchemaFailure, err: err}
 		}
 		backendHeaders(req, sa)
+		// Upstream tiers the catalog by client identity: the CLI User-Agent is
+		// served a narrow list that omits the fast/balanced/deep presets and the
+		// default model, while the desktop identity receives the full catalog.
+		// Discovery therefore has to identify as the desktop client or those
+		// models never enter the list.
+		req.Header.Set("User-Agent", workBuddyDesktopUA)
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("Origin", origin)
 		req.Header.Set("Referer", origin+"/")

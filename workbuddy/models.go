@@ -25,7 +25,9 @@ func defaultModelInfo(id, name string) pluginapi.ModelInfo {
 }
 
 func wbModels() []pluginapi.ModelInfo {
-	return []pluginapi.ModelInfo{defaultModelInfo("auto", "")}
+	// The static list advertises the default model; canonicalModelID keeps it
+	// the same ID the catalog serves so both spellings route identically.
+	return []pluginapi.ModelInfo{defaultModelInfo(canonicalModelID("auto"), "")}
 }
 
 func cacheModelAliases(host pluginapi.HostConfigSummary) {
@@ -74,7 +76,10 @@ func resolveUpstreamModel(model string, attributes map[string]string) string {
 	// forwarded as itself rather than rewritten to the concrete model behind
 	// it. Guessing a replacement would silently change both the response and
 	// the billed multiplier; the mapping only completes the catalog.
-	return m
+	//
+	// The default model is the exception: "auto" and "default" are two
+	// spellings of one model, so the alias folds onto the served ID.
+	return canonicalModelID(m)
 }
 
 // parseModelAliasAttribute decodes a per-auth alias override from auth

@@ -256,3 +256,17 @@ func TestParseWorkBuddyV3ConfigCanonicalizesAuto(t *testing.T) {
 		t.Fatalf("rich metadata not merged onto the canonical ID: %#v", got[0])
 	}
 }
+
+// "auto" is only meaningful as the default model: forwarding it must reach the
+// same upstream model the catalog serves, not a nonexistent "auto".
+func TestResolveUpstreamModel_FoldsAutoOntoDefault(t *testing.T) {
+	if got := resolveUpstreamModel("auto", nil); got != "default" {
+		t.Fatalf("got %q, want default", got)
+	}
+	if got := resolveUpstreamModel("default", nil); got != "default" {
+		t.Fatalf("got %q, want default", got)
+	}
+	if got := resolveUpstreamModel("hy3", nil); got != "hy3" {
+		t.Fatalf("got %q, want hy3", got)
+	}
+}

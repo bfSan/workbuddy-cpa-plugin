@@ -180,23 +180,33 @@ func TestCompletePresetModels_NoopWhenEntitled(t *testing.T) {
 	}
 }
 
-// A client may still ask for the preset alias even though the catalog serves
-// the concrete model. Forwarding must follow the same mapping rather than
-// rejecting an ID the catalog used to advertise.
-func TestResolveUpstreamModel_FollowsPresetAlias(t *testing.T) {
+// A preset carries its own upstream credits and capabilities, so it is
+// forwarded as itself: rewriting it to the concrete model behind it would
+// change both the response and the billed rate.
+func TestResolveUpstreamModel_KeepsPresetAlias(t *testing.T) {
 	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a"}})
 	defer restore()
-	if got := resolveUpstreamModel("preset-a", nil); got != "concrete-a" {
-		t.Fatalf("got %q, want concrete-a", got)
+	if got := resolveUpstreamModel("preset-a", nil); got != "preset-a" {
+		t.Fatalf("got %q, want the alias itself", got)
 	}
-	// A host-supplied oauth-model-alias still wins over the preset mapping.
+	// A host-supplied oauth-model-alias still wins: it is an explicit override.
 	defer setModelAliasForTest(map[string]string{"preset-a": "host-target"})()
 	if got := resolveUpstreamModel("preset-a", nil); got != "host-target" {
 		t.Fatalf("host alias should win, got %q", got)
 	}
-	// Unmapped models are untouched.
 	if got := resolveUpstreamModel("serve-chat", nil); got != "serve-chat" {
 		t.Fatalf("got %q, want serve-chat", got)
+	}
+}
+
+// The served catalog must list a preset under its own ID so the gateway can
+// route it, rather than renaming it away.
+func TestDiscoveredModelInfosKeepsPresetIDs(t *testing.T) {
+	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a"}})
+	defer restore()
+	got := discoveredModelInfos([]modelFacts{{ID: "preset-a"}, {ID: "concrete-a"}}, nil)
+	if len(got) != 2 || got[0].ID != "preset-a" || got[1].ID != "concrete-a" {
+		t.Fatalf("presets must be served as themselves, got %#v", got)
 	}
 }
 

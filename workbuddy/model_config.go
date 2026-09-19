@@ -284,9 +284,9 @@ func handleModelListQuery() map[string]any {
 			"kind":       string(classifyModelID(id)),
 			"kindLabel":  modelKindLabel(classifyModelID(id)),
 			"chatUsable": modelKindChatUsable(classifyModelID(id)),
-			// A served ID may be an upgraded preset alias; naming the alias is
-			// what makes the rename legible rather than looking arbitrary.
-			"preset": servedPresetAlias(id),
+			// A preset is listed as itself; flag it so an operator knows it is
+			// a desktop alias rather than a concrete upstream model.
+			"preset": isPresetModelID(id),
 			// Throttling is per (account, model), so the catalog-level view can
 			// only report how many accounts are affected by this model.
 			"coolingAccounts": cooldownModelCount(id),

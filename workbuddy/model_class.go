@@ -148,14 +148,11 @@ func completePresetModels(ids []string) []string {
 	return out
 }
 
-// upgradeModelID enforces the naming rule the desktop app applies to its own
-// preset aliases: when a preset has a configured concrete model, it is served
-// as that model rather than under the alias. `present` is the set of IDs the
-// catalog actually has, so an alias never invents a model the account is not
-// entitled to.
-//
-// It is a rename, not a filter: catalog order and size are preserved, and an
-// alias with no configured target keeps the alias itself.
+// upgradeModelID is retained for callers that request the rename explicitly.
+// The catalog no longer applies it: a preset carries its own upstream credits
+// and capabilities, so rewriting it to the concrete model behind it would
+// change both the response and the billed rate. completePresetModels is what
+// widens the catalog.
 func upgradeModelID(id string, present map[string]struct{}) string {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -283,20 +280,13 @@ func discoveredModelInfos(models []modelFacts, records map[string]modelFacts) []
 	if len(models) == 0 {
 		return []pluginapi.ModelInfo{}
 	}
-	present := make(map[string]struct{}, len(models))
-	for _, model := range models {
-		present[strings.TrimSpace(model.ID)] = struct{}{}
-	}
 	out := make([]pluginapi.ModelInfo, 0, len(models))
 	for _, model := range models {
 		id := strings.TrimSpace(model.ID)
 		if id == "" {
 			continue
 		}
-		served := upgradeModelID(id, present)
-		facts := model
-		facts.ID = served
-		out = append(out, modelInfoFromSources(facts, matchModelsDevRecord(served, records)))
+		out = append(out, modelInfoFromSources(model, matchModelsDevRecord(id, records)))
 	}
 	return out
 }

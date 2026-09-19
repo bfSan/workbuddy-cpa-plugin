@@ -70,12 +70,11 @@ func resolveUpstreamModel(model string, attributes map[string]string) string {
 	if ok {
 		return name
 	}
-	// A preset alias is served under its concrete model, so a client that still
-	// asks for the alias must be forwarded to the same place. Unlike catalog
-	// assembly there is no catalog here to check membership against: the
-	// executor validates the resolved model against the auth's own list, so
-	// resolving to the configured target is the safe half of the mapping.
-	return presetTargetFor(m)
+	// A preset alias carries its own upstream credits and capabilities, so it is
+	// forwarded as itself rather than rewritten to the concrete model behind
+	// it. Guessing a replacement would silently change both the response and
+	// the billed multiplier; the mapping only completes the catalog.
+	return m
 }
 
 // parseModelAliasAttribute decodes a per-auth alias override from auth

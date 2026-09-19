@@ -643,20 +643,21 @@ test("loadModels reports how many listed models are not chat-usable", async () =
   assert.match(hint, /3 个非聊天模型/);
 });
 
-// A served ID may be an upgraded preset; the row must name the alias so the
-// rename is legible instead of looking arbitrary.
-test("renderModels names the preset alias behind a served model", async () => {
+// A preset is a desktop alias with its own credits, so it is listed as itself
+// and flagged — not rewritten into some concrete model.
+test("renderModels flags preset aliases instead of renaming them", async () => {
   const panel = loadPanel();
   panel.context.api = async () => ({
     models: [
-      { id: "concrete-a", name: "A", kind: "chat", kindLabel: "chat", preset: "preset-a", credits: {} },
-      { id: "serve-chat", name: "B", kind: "chat", kindLabel: "chat", credits: {} },
+      { id: "preset-a", name: "A", kind: "chat", kindLabel: "chat", preset: true, credits: {} },
+      { id: "serve-chat", name: "B", kind: "chat", kindLabel: "chat", preset: false, credits: {} },
     ],
     source: "fresh",
   });
   await panel.context.loadModels(false);
   const html = panel.elements.get("modelList").innerHTML;
-  assert.match(html, /预设 preset-a/);
-  // A model served as itself carries no preset badge.
-  assert.doesNotMatch(html, /serve-chat[\s\S]{0,80}?预设/);
+  assert.match(html, /preset-a/);
+  assert.match(html, /badge preset/);
+  // A concrete model carries no preset badge.
+  assert.equal((html.match(/badge preset/g) || []).length, 1);
 });

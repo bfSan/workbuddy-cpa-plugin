@@ -806,10 +806,10 @@ function renderModels(){
     if(kind&&kind!=="chat"){
       tags.push(`<span class="badge kind-${esc(kind)}" title="该模型不是聊天模型，直接发请求会被上游拒绝">${esc(m.kindLabel||kind)}</span>`);
     }
-    // A preset alias is served under the concrete model behind it, so say which
-    // alias produced the row instead of leaving an unexplained rename.
+    // A preset is a desktop alias with its own credits, not a concrete model:
+    // label it so an operator knows what they are picking.
     if(m.preset){
-      tags.push(`<span class="badge preset" title="桌面端预设 ${esc(m.preset)}，实际按 ${escId} 转发">预设 ${esc(m.preset)}</span>`);
+      tags.push(`<span class="badge preset" title="桌面端预设模型，倍率与能力由上游按该别名上报">预设</span>`);
     }
     const cd=m.credits||{};
     const cdValue=String(cd.value||"");

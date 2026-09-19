@@ -140,8 +140,12 @@ func TestModelForAuthReturnsResponseLocalReadyAndStaleModels(t *testing.T) {
 			if resp.Provider != providerName || len(resp.Models) != 1 || resp.Models[0].ID != "serve-visible" {
 				t.Fatalf("model response = %#v", resp)
 			}
-			if workBuddyCalls != 1 || metadataCalls != 1 {
-				t.Fatalf("source calls: WorkBuddy=%d models.dev=%d, want 1 each", workBuddyCalls, metadataCalls)
+			wantWorkBuddyCalls := 2
+			if tt.stale {
+				wantWorkBuddyCalls = 1
+			}
+			if workBuddyCalls != wantWorkBuddyCalls || metadataCalls != 1 {
+				t.Fatalf("source calls: WorkBuddy=%d models.dev=%d, want %d catalogue and 1 metadata", workBuddyCalls, metadataCalls, wantWorkBuddyCalls)
 			}
 			if got := resolveUpstreamModel("visible-alias", nil); got != "serve-visible" {
 				t.Fatalf("cached alias resolved to %q", got)
@@ -222,8 +226,8 @@ func TestModelForAuthFailedAndNotStartedReturnEmptySuccess(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertEmpty(t, raw)
-		if calls != 1 {
-			t.Fatalf("bootstrap calls = %d, want 1", calls)
+		if calls != 2 {
+			t.Fatalf("bootstrap calls = %d, want 2", calls)
 		}
 		if got := runtime.snapshotForAuthID(authID); got.State != modelNotStarted {
 			t.Fatalf("invalidated snapshot = %#v", got)

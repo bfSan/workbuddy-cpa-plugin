@@ -361,13 +361,13 @@ func TestFetchWorkBuddyCatalogRoutesByJWTRealm(t *testing.T) {
 		t.Run(string(tt.realm), func(t *testing.T) {
 			sa := syntheticStoredAuth(t, tt.realm)
 			var method, requestURL, callbackID string
-			var headers http.Header
+			var headers []http.Header
 			deadlineOK := false
 			do := func(req *http.Request, gotCallbackID string) (*hostHTTPResponse, error) {
 				method = req.Method
 				requestURL = req.URL.String()
 				callbackID = gotCallbackID
-				headers = req.Header.Clone()
+				headers = append(headers, req.Header.Clone())
 				if deadline, ok := req.Context().Deadline(); ok {
 					remaining := time.Until(deadline)
 					deadlineOK = remaining > 14*time.Second && remaining <= modelSourceRequestTimeout
@@ -409,9 +409,23 @@ func TestFetchWorkBuddyCatalogRoutesByJWTRealm(t *testing.T) {
 				"X-IDE-Version":   "2.63.2",
 				"X-Agent-Intent":  "craft",
 			}
-			for key, want := range wantHeaders {
-				if value := headers.Get(key); value != want {
-					t.Errorf("%s = %q, want %q", key, value, want)
+			if len(headers) != 2 {
+				t.Fatalf("catalog requests = %d, want 2 identity-specific requests", len(headers))
+			}
+			if got := headers[0].Get("User-Agent"); got != workBuddyDesktopUA {
+				t.Fatalf("desktop catalog User-Agent = %q, want %q", got, workBuddyDesktopUA)
+			}
+			if got := headers[1].Get("User-Agent"); got != clientUA {
+				t.Fatalf("CLI catalog User-Agent = %q, want %q", got, clientUA)
+			}
+			for _, header := range headers {
+				for key, want := range wantHeaders {
+					if key == "User-Agent" {
+						continue
+					}
+					if value := header.Get(key); value != want {
+						t.Errorf("%s = %q, want %q", key, value, want)
+					}
 				}
 			}
 		})
@@ -608,11 +622,10 @@ func TestParseWorkBuddyV3ConfigServesPresetAsItself(t *testing.T) {
 	}
 }
 
-// Catalog discovery identifies as the desktop client, because upstream tiers
-// the catalog by User-Agent: the CLI identity is served a narrow list that
-// omits the presets and the default model. Without this the rich entries never
-// appear and the served catalog silently shrinks.
-func TestFetchWorkBuddyCatalogUsesDesktopIdentity(t *testing.T) {
+// Catalog discovery asks as both client identities, because upstream tiers the
+// catalog by User-Agent and neither list is a superset of the other. The
+// desktop request leads; the CLI request fills in its identity-specific slice.
+func TestFetchWorkBuddyCatalogUsesBothIdentities(t *testing.T) {
 	var sawUA []string
 	do := func(req *http.Request, _ string) (*hostHTTPResponse, error) {
 		sawUA = append(sawUA, req.Header.Get("User-Agent"))
@@ -629,9 +642,58 @@ func TestFetchWorkBuddyCatalogUsesDesktopIdentity(t *testing.T) {
 	if len(sawUA) == 0 {
 		t.Fatal("no request was made")
 	}
-	for _, ua := range sawUA {
-		if ua != workBuddyDesktopUA {
-			t.Fatalf("catalog discovery User-Agent = %q, want the desktop identity %q", ua, workBuddyDesktopUA)
-		}
+	if len(sawUA) != 2 || sawUA[0] != workBuddyDesktopUA || sawUA[1] != clientUA {
+		t.Fatalf("catalog discovery User-Agents = %#v, want desktop then CLI", sawUA)
+	}
+}
+
+// mergeModelCatalog unions the two identity-specific slices of the catalog.
+// Neither is a superset: the desktop list has the presets, the CLI list has the
+// default model and a few entries the desktop list omits.
+func TestMergeModelCatalog_UnionsWithoutDuplicating(t *testing.T) {
+	primary := []modelFacts{
+		{ID: "preset-a", Name: "Preset", Credits: "x0.21"},
+		{ID: "shared", Name: "Desktop Name", Credits: "x0.21"},
+	}
+	secondary := []modelFacts{
+		{ID: "shared", Name: "CLI Name", Credits: "x9.99"},
+		{ID: "cli-only", Name: "CLI Only"},
+	}
+	got := mergeModelCatalog(primary, secondary)
+	if len(got) != 3 {
+		t.Fatalf("expected a 3-entry union, got %#v", got)
+	}
+	if got[0].ID != "preset-a" || got[1].ID != "shared" || got[2].ID != "cli-only" {
+		t.Fatalf("primary order must lead, got %#v", got)
+	}
+	// The leading catalog's metadata wins for a shared ID; blanks are filled.
+	if got[1].Name != "Desktop Name" {
+		t.Fatalf("primary metadata should win, got %#v", got[1])
+	}
+	if got[1].Credits != "x0.21" {
+		t.Fatalf("primary credits should be kept, got %#v", got[1])
+	}
+}
+
+// mergeModelCatalog must never produce a duplicate ID: validateModelFacts
+// rejects the whole snapshot on one, which would degrade the catalog.
+func TestMergeModelCatalog_FillsGapsWithoutDuplicates(t *testing.T) {
+	primary := []modelFacts{{ID: "shared"}}
+	secondary := []modelFacts{{ID: "shared", Name: "Filled", Credits: "x1.00"}}
+	got := mergeModelCatalog(primary, secondary)
+	if len(got) != 1 {
+		t.Fatalf("expected one merged entry, got %#v", got)
+	}
+	if got[0].Name != "Filled" || got[0].Credits != "x1.00" {
+		t.Fatalf("blank fields should be filled from the secondary list: %#v", got[0])
+	}
+}
+
+// An empty secondary list is the common case for a global account, and must be
+// a no-op rather than dropping the primary catalog.
+func TestMergeModelCatalog_EmptySecondaryIsNoop(t *testing.T) {
+	primary := []modelFacts{{ID: "serve-chat"}}
+	if got := mergeModelCatalog(primary, nil); len(got) != 1 || got[0].ID != "serve-chat" {
+		t.Fatalf("empty secondary must be a no-op, got %#v", got)
 	}
 }

@@ -216,6 +216,42 @@ func firstNonEmptyModelDescription(values ...string) string {
 	return ""
 }
 
+// mergeModelCatalog unions two catalogs of the same account. The primary list
+// leads: its order and metadata win for an ID both carry, because it is the
+// view the desktop client itself sees. Entries that only the secondary list
+// has are appended with their own metadata, so neither identity's slice of the
+// catalogue is lost.
+func mergeModelCatalog(primary, secondary []modelFacts) []modelFacts {
+	if len(secondary) == 0 {
+		return primary
+	}
+	out := make([]modelFacts, 0, len(primary)+len(secondary))
+	seen := make(map[string]int, len(primary)+len(secondary))
+	for _, model := range primary {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		seen[id] = len(out)
+		out = append(out, model)
+	}
+	for _, model := range secondary {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		if index, exists := seen[id]; exists {
+			// The leading catalog already describes this model; only fill gaps
+			// it left blank rather than overwriting what it reported.
+			fillMissingModelFacts(&out[index], model)
+			continue
+		}
+		seen[id] = len(out)
+		out = append(out, model)
+	}
+	return out
+}
+
 // normalizeModelCredits keeps the upstream multiplier verbatim but bounded:
 // the field is display-only, so a hostile value must not bloat the catalog or
 // the cache. Upstream formats vary ("x0.29", "x2.20 credits", "x0.00").
@@ -329,18 +365,13 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 	ctx, cancel := context.WithTimeout(context.Background(), modelSourceRequestTimeout)
 	defer cancel()
 
-	request := func(path string) (*hostHTTPResponse, error) {
+	request := func(path, userAgent string) (*hostHTTPResponse, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 		if err != nil {
 			return nil, &modelSourceError{Kind: modelSourceSchemaFailure, err: err}
 		}
 		backendHeaders(req, sa)
-		// Upstream tiers the catalog by client identity: the CLI User-Agent is
-		// served a narrow list that omits the fast/balanced/deep presets and the
-		// default model, while the desktop identity receives the full catalog.
-		// Discovery therefore has to identify as the desktop client or those
-		// models never enter the list.
-		req.Header.Set("User-Agent", workBuddyDesktopUA)
+		req.Header.Set("User-Agent", userAgent)
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("Origin", origin)
 		req.Header.Set("Referer", origin+"/")
@@ -354,7 +385,7 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 		return resp, nil
 	}
 
-	resp, err := request("/v3/config")
+	resp, err := request("/v3/config", workBuddyDesktopUA)
 	if err != nil {
 		return workBuddyCatalog{}, err
 	}
@@ -363,13 +394,24 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 		if err != nil {
 			return workBuddyCatalog{}, &modelSourceError{Kind: modelSourceSchemaFailure, err: err}
 		}
+		// Upstream serves a different slice of the catalog per client identity:
+		// the desktop list carries the fast/balanced/deep presets and the
+		// desktop default, while the CLI list carries the default model and a
+		// few entries the desktop list omits. Neither is a superset, so the
+		// served catalog is their union. The CLI fetch is best-effort: a failure
+		// there must not discard the desktop catalog that already parsed.
+		if cliResp, cliErr := request("/v3/config", clientUA); cliErr == nil && cliResp.StatusCode == http.StatusOK {
+			if cliModels, parseErr := parseWorkBuddyV3Config(cliResp.Body); parseErr == nil {
+				models = mergeModelCatalog(models, cliModels)
+			}
+		}
 		return workBuddyCatalog{Realm: realm, Endpoint: workBuddyEndpointV3Config, Models: models}, nil
 	}
 	if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed {
 		return workBuddyCatalog{}, &modelSourceError{Kind: modelSourceHTTPFailure, StatusCode: resp.StatusCode}
 	}
 
-	resp, err = request("/console/enterprises/personal/models")
+	resp, err = request("/console/enterprises/personal/models", clientUA)
 	if err != nil {
 		return workBuddyCatalog{}, err
 	}

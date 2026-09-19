@@ -196,8 +196,8 @@ func TestModelRuntimeFreshBootstrapModelFutureSchemaIsCacheRead(t *testing.T) {
 		AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-future-models", StorageJSON: mustJSON(sa)},
 		HostCallbackID:   "callback-failure",
 	})
-	if calls != 1 {
-		t.Fatalf("WorkBuddy refresh calls = %d, want 1", calls)
+	if calls != 2 {
+		t.Fatalf("WorkBuddy refresh calls = %d, want 2", calls)
 	}
 	if got.State != modelFailed || got.ErrorCode != modelErrorCacheRead {
 		t.Fatalf("snapshot = %#v", got)
@@ -370,13 +370,15 @@ func TestModelRuntimeSameAuthSingleflight(t *testing.T) {
 	var workBuddyCalls atomic.Int32
 	var metadataCalls atomic.Int32
 	started := make(chan struct{})
+	var startedOnce sync.Once
 	release := make(chan struct{})
 	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
 		switch req.URL.Host {
 		case "copilot.tencent.com":
-			if workBuddyCalls.Add(1) == 1 {
+			workBuddyCalls.Add(1)
+			startedOnce.Do(func() {
 				close(started)
-			}
+			})
 			<-release
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
 		case "models.dev":
@@ -407,7 +409,7 @@ func TestModelRuntimeSameAuthSingleflight(t *testing.T) {
 			t.Fatalf("result = %#v", result)
 		}
 	}
-	if workBuddyCalls.Load() != 1 || metadataCalls.Load() != 1 {
+	if workBuddyCalls.Load() != 2 || metadataCalls.Load() != 1 {
 		t.Fatalf("calls: workbuddy=%d metadata=%d", workBuddyCalls.Load(), metadataCalls.Load())
 	}
 }
@@ -417,20 +419,24 @@ func TestModelRuntimeDifferentAuthIsolation(t *testing.T) {
 	var globalCalls atomic.Int32
 	cnStarted := make(chan struct{})
 	globalStarted := make(chan struct{})
+	var cnStartedOnce sync.Once
+	var globalStartedOnce sync.Once
 	cnRelease := make(chan struct{})
 	globalRelease := make(chan struct{})
 	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
 		switch req.URL.Host {
 		case "copilot.tencent.com":
-			if cnCalls.Add(1) == 1 {
+			cnCalls.Add(1)
+			cnStartedOnce.Do(func() {
 				close(cnStarted)
-			}
+			})
 			<-cnRelease
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["cn-model"]}]}}`)}, nil
 		case "www.workbuddy.ai":
-			if globalCalls.Add(1) == 1 {
+			globalCalls.Add(1)
+			globalStartedOnce.Do(func() {
 				close(globalStarted)
-			}
+			})
 			<-globalRelease
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["global-model"]}]}}`)}, nil
 		case "models.dev":
@@ -476,7 +482,7 @@ func TestModelRuntimeDifferentAuthIsolation(t *testing.T) {
 	if !concurrent {
 		t.Fatal("different auth WorkBuddy requests were serialized")
 	}
-	if cnCalls.Load() != 1 || globalCalls.Load() != 1 {
+	if cnCalls.Load() != 2 || globalCalls.Load() != 2 {
 		t.Fatalf("WorkBuddy calls: cn=%d global=%d", cnCalls.Load(), globalCalls.Load())
 	}
 	if gotCN.State != modelReady || len(gotCN.Models) != 1 || gotCN.Models[0].ID != "cn-model" {
@@ -575,11 +581,12 @@ func TestModelRuntimeMetadataSingleflight(t *testing.T) {
 
 func TestModelRuntimeConcurrentReaders(t *testing.T) {
 	started := make(chan struct{})
+	var startedOnce sync.Once
 	release := make(chan struct{})
 	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
 		switch req.URL.Host {
 		case "copilot.tencent.com":
-			close(started)
+			startedOnce.Do(func() { close(started) })
 			<-release
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
 		case "models.dev":
@@ -652,6 +659,7 @@ func TestModelRuntimeConcurrentReaders(t *testing.T) {
 
 func TestModelRuntimeOldGenerationCannotCommit(t *testing.T) {
 	oldStarted := make(chan struct{})
+	var oldStartedOnce sync.Once
 	releaseOld := make(chan struct{})
 	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
 		if req.URL.Host == "models.dev" {
@@ -659,7 +667,7 @@ func TestModelRuntimeOldGenerationCannotCommit(t *testing.T) {
 		}
 		token := req.Header.Get("Authorization")
 		if strings.HasSuffix(token, "signature-a") {
-			close(oldStarted)
+			oldStartedOnce.Do(func() { close(oldStarted) })
 			<-releaseOld
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
 		}
@@ -712,13 +720,14 @@ func TestModelRuntimeOldGenerationCannotCommit(t *testing.T) {
 
 	t.Run("late failure does not publish an error", func(t *testing.T) {
 		oldStarted := make(chan struct{})
+		var oldStartedOnce sync.Once
 		releaseOld := make(chan struct{})
 		do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
 			if req.URL.Host == "models.dev" {
 				return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-beta":{"id":"serve-beta"}}`)}, nil
 			}
 			if strings.HasSuffix(req.Header.Get("Authorization"), "signature-a") {
-				close(oldStarted)
+				oldStartedOnce.Do(func() { close(oldStarted) })
 				<-releaseOld
 				return nil, errors.New(modelRuntimeRawWorkBuddyTransport)
 			}
@@ -745,13 +754,14 @@ func TestModelRuntimeOldGenerationCannotCommit(t *testing.T) {
 
 func TestModelRuntimeSharedIdentityRejectsLateOlderCatalogCommit(t *testing.T) {
 	oldStarted := make(chan struct{})
+	var oldStartedOnce sync.Once
 	releaseOld := make(chan struct{})
 	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
 		if req.URL.Host == "models.dev" {
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-alpha":{"id":"serve-alpha"},"vendor/serve-beta":{"id":"serve-beta"}}`)}, nil
 		}
 		if strings.HasSuffix(req.Header.Get("Authorization"), "signature-a") {
-			close(oldStarted)
+			oldStartedOnce.Do(func() { close(oldStarted) })
 			<-releaseOld
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
 		}
@@ -862,6 +872,7 @@ func TestModelRuntimeConcurrentSharedIdentityBootstrapsRemainExecutable(t *testi
 
 func TestModelRuntimeSharedIdentityFailureDoesNotDiscardConcurrentSuccess(t *testing.T) {
 	successStarted := make(chan struct{})
+	var successStartedOnce sync.Once
 	failureReturned := make(chan struct{})
 	releaseSuccess := make(chan struct{})
 	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
@@ -869,7 +880,7 @@ func TestModelRuntimeSharedIdentityFailureDoesNotDiscardConcurrentSuccess(t *tes
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-alpha":{"id":"serve-alpha"}}`)}, nil
 		}
 		if strings.HasSuffix(req.Header.Get("Authorization"), "signature-good") {
-			close(successStarted)
+			successStartedOnce.Do(func() { close(successStarted) })
 			<-releaseSuccess
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
 		}
@@ -972,7 +983,7 @@ func TestModelRuntimeConfigGenerationInvalidatesSnapshot(t *testing.T) {
 		}
 
 		newResult := runtime.ensureForAuth(req)
-		if workBuddyCalls.Load() != 2 || newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-beta" {
+		if workBuddyCalls.Load() != 4 || newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-beta" {
 			t.Fatalf("calls=%d new result=%#v", workBuddyCalls.Load(), newResult)
 		}
 	})
@@ -1039,7 +1050,7 @@ func TestModelRuntimeConfigGenerationInvalidatesSnapshot(t *testing.T) {
 		}
 
 		newResult := runtime.ensureForAuth(req)
-		if workBuddyCalls.Load() != 2 || metadataCalls.Load() != 2 || newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-alpha" {
+		if workBuddyCalls.Load() != 4 || metadataCalls.Load() != 2 || newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-alpha" {
 			t.Fatalf("workbuddy=%d metadata=%d new result=%#v", workBuddyCalls.Load(), metadataCalls.Load(), newResult)
 		}
 	})
@@ -1245,8 +1256,15 @@ func TestModelRuntimeStaleMatrix(t *testing.T) {
 				AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-stale", StorageJSON: mustJSON(sa)},
 				HostCallbackID:   "callback-stale",
 			})
-			if workBuddyCalls != 1 || metadataCalls != 1 {
-				t.Fatalf("refresh calls: workbuddy=%d metadata=%d, want 1 each", workBuddyCalls, metadataCalls)
+			// A failing catalogue request never reaches the CLI fill-in
+			// request, while a successful one always issues both identity
+			// requests. Metadata is intentionally single-flight either way.
+			wantWorkBuddyCalls := 2
+			if tt.workBuddyFails {
+				wantWorkBuddyCalls = 1
+			}
+			if workBuddyCalls != wantWorkBuddyCalls || metadataCalls != 1 {
+				t.Fatalf("refresh calls: workbuddy=%d metadata=%d, want %d catalogue and 1 metadata", workBuddyCalls, metadataCalls, wantWorkBuddyCalls)
 			}
 			if got.State != tt.wantState || got.ModelSource != tt.wantModelSource || got.MetadataSource != tt.wantMetadataSource {
 				t.Fatalf("snapshot = %#v", got)

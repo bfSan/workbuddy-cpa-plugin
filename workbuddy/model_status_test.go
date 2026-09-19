@@ -230,3 +230,33 @@ func TestDashboardIncludesModelStatus(t *testing.T) {
 		}
 	})
 }
+
+func TestDashboardDoesNotExposeManualSelectionFields(t *testing.T) {
+	installModelStatesForTest(t, nil)
+	old := panelHostAuthList
+	panelHostAuthList = func() ([]pluginapi.HostAuthFileEntry, error) {
+		return []pluginapi.HostAuthFileEntry{{
+			ID:        "wb-a",
+			AuthIndex: "idx-a",
+			Name:      "wb-a.json",
+			Label:     "wb-a",
+		}}, nil
+	}
+	t.Cleanup(func() { panelHostAuthList = old })
+
+	resp := buildDashboardEx(false, false)
+	if _, exists := resp["active_auth"]; exists {
+		t.Fatalf("dashboard exposes active_auth: %#v", resp["active_auth"])
+	}
+	accounts, ok := resp["accounts"].([]wbAccount)
+	if !ok || len(accounts) != 1 {
+		t.Fatalf("accounts = %#v", resp["accounts"])
+	}
+	raw, err := json.Marshal(accounts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(`"selected"`)) {
+		t.Fatalf("account exposes selected: %s", raw)
+	}
+}

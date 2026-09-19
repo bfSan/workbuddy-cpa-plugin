@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -72,6 +73,39 @@ func TestManagementPanelRemainsPublicWithKeyConfigured(t *testing.T) {
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("panel status=%d body=%s", resp.StatusCode, resp.Body)
+	}
+	cacheControl := strings.ToLower(resp.Headers.Get("Cache-Control"))
+	if !strings.Contains(cacheControl, "no-store") || !strings.Contains(cacheControl, "no-cache") {
+		t.Fatalf("panel Cache-Control=%q, want no-store and no-cache", resp.Headers.Get("Cache-Control"))
+	}
+}
+
+func TestManagementRegistrationOmitsManualAccountSelect(t *testing.T) {
+	managementAPIKeyMu.Lock()
+	oldKey := managementAPIKey
+	managementAPIKey = "secret"
+	managementAPIKeyMu.Unlock()
+	t.Cleanup(func() {
+		managementAPIKeyMu.Lock()
+		managementAPIKey = oldKey
+		managementAPIKeyMu.Unlock()
+	})
+
+	base := loadedManagementBasePath() + "/plugins/" + providerName
+	resp := managementResponseForTest(t, pluginapi.ManagementRequest{
+		Method: http.MethodPost,
+		Path:   base + "/select",
+		Headers: http.Header{
+			"Authorization": []string{"Bearer secret"},
+		},
+	})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST /select status=%d, want 404", resp.StatusCode)
+	}
+	for _, route := range managementRegistration().Routes {
+		if route.Path == base+"/select" {
+			t.Fatal("management registration still advertises /select")
+		}
 	}
 }
 

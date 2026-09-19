@@ -31,7 +31,6 @@ type wbAccount struct {
 	Status       string          `json:"status"`
 	Disabled     bool            `json:"disabled"`
 	Exhausted    bool            `json:"exhausted"`
-	Selected     bool            `json:"selected"` // panel active routing card
 	Credits      *creditsSummary `json:"credits,omitempty"`
 	Checkin      *checkinSummary `json:"checkin,omitempty"`
 	TrialClaimed bool            `json:"trial_claimed,omitempty"` // Global: expert trial already claimed
@@ -268,18 +267,16 @@ func buildDashboardExWithCallback(force, fetchCredits bool, callbackID string) m
 	checkinAutoMu.RLock()
 	auto := checkinAuto
 	checkinAutoMu.RUnlock()
-	// Ensure default selection for panel + scheduler (first usable card).
-	activeID := ensureDefaultActiveAuth(out)
+	// Keep the automatic scheduler selection current. This is internal state;
+	// the panel no longer exposes a manual account selection.
+	ensureDefaultActiveAuth(out)
 	// Aggregate credits for panel/API consumers (all accounts currently in out).
 	sum := summarizeCredits(out)
-	// Mark selected account in list for UI.
 	for i := range out {
-		out[i].Selected = out[i].AuthID == activeID
 		out[i].Cooling = cooldownSnapshotFor(out[i].AuthID)
 	}
 	resp := map[string]any{
 		"accounts":       out,
-		"active_auth":    activeID,
 		"checkin_auto":   auto,
 		"lifecycle_auto": lifecycleEnabled(),
 		"schedule":       []string{"09:00", "21:00"},

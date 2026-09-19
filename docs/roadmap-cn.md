@@ -23,7 +23,7 @@
 | 429 判定 | `isSoftRateLimit()` 只做**分类**，分类完就结束，**没有任何冷却动作** | `policy.go:98` |
 | 硬错误动作 | `reconcileAfterExecutorError()` 只处理硬积分错误（402 / 余额不足），软限流直接 return | `lifecycle.go:400` |
 | 倍率 | 插件拉的是**积分余额**（credits），**没有"模型倍率"概念** | `credits_handler.go` |
-| 管理 API | 12 条路由，`/accounts` `/credits` `/checkin` `/select` 等 | `management.go:161+` |
+| 管理 API | 管理路由，包含 `/accounts` `/credits` `/checkin` 等 | `management.go:161+` |
 | 面板 | 单页 HTML，`/v0/resource/plugins/workbuddy/panel` | `panel.go` |
 
 **关键结论**：三个诉求里，**冷却是完全缺失的**（只有错误分类没有动作），

@@ -1,4 +1,5 @@
-// active_auth.go tracks the panel-selected WorkBuddy account used for routing.
+// active_auth.go tracks the automatically selected WorkBuddy account used for
+// routing.
 //
 // Region (CN vs Global) is taken from that account's stored domain field —
 // no per-request JWT iss decode. Default: first available candidate. When the
@@ -50,11 +51,10 @@ type activeAuthCandidate struct {
 }
 
 // pickActiveAuth chooses which workbuddy auth to use from host candidates.
-// The panel selection is sticky: it stays on the current account unless that
+// The automatic selection is sticky: it stays on the current account unless that
 // account is no longer in the candidate list (disabled/deleted by host) or
 // is marked exhausted in cache. When switching, it picks the first
-// non-exhausted candidate and updates activeAuthID so the panel reflects
-// the change on next dashboard load.
+// non-exhausted candidate and updates activeAuthID for the next request.
 func pickActiveAuth(candidates []activeAuthCandidate) string {
 	if len(candidates) == 0 {
 		return ""
@@ -95,7 +95,7 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 	return next
 }
 
-// ensureDefaultActiveAuth sets the panel-selected account.
+// ensureDefaultActiveAuth refreshes the automatically selected account.
 // Called from buildDashboardEx on every /accounts and /refresh request.
 //
 // Rules (single source of truth, same as pickActiveAuth):
@@ -104,8 +104,7 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 //  3. If current selection is gone (disabled/deleted) → switch to first available.
 //  4. If all exhausted → keep current if alive, else first.
 //
-// This ensures the panel's selected card always matches what scheduler.pick
-// actually routes to. No silent drift.
+// This keeps scheduler.pick aligned with the latest account state.
 func ensureDefaultActiveAuth(accounts []wbAccount) string {
 	cur := getActiveAuthID()
 	live := make(map[string]wbAccount, len(accounts))

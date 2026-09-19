@@ -28,8 +28,8 @@ func TestRegistrationConfigFieldsMatchImplementedConfig(t *testing.T) {
 			if strings.Contains(strings.ToLower(field.Description), "highest remaining") {
 				t.Fatal("scheduler_mode description advertises unimplemented highest-credit ranking")
 			}
-			if !strings.Contains(strings.ToLower(field.Description), "panel-selected") {
-				t.Fatal("scheduler_mode description must document panel-selected routing")
+			if !strings.Contains(strings.ToLower(field.Description), "automatically selected") {
+				t.Fatal("scheduler_mode description must document automatic routing")
 			}
 		}
 	}

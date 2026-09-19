@@ -41,7 +41,7 @@ built-in management dashboard.
   with credits progress bars, plan badges, exhausted/disabled flags, region
   filter, and credential import.
 - **Scheduler** (optional) — `scheduler_mode: credits` makes the plugin pick
-  the panel-selected account; `off` (default) defers to CPA's built-in
+  an automatically selected usable account; `off` (default) defers to CPA's built-in
   scheduler entirely.
 - **Usage forwarding** — implements `UsagePlugin`; every request's usage
   record is forwarded to a configurable CPAMP endpoint. No record is sent
@@ -133,7 +133,7 @@ plugins:
 
       # Scheduler behavior (default "off"):
       #   off     → defer to CPA's built-in scheduler entirely
-      #   credits → plugin picks the panel-selected account (with fallback
+      #   credits → plugin picks an automatically selected account (with fallback
       #             when that account is exhausted / disabled)
       scheduler_mode: "off"
 

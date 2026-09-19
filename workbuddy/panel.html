@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>WorkBuddy 面板</title>
 <style>
 /* Theme tokens aligned with CPA management panel (key-policy / themes.scss):
@@ -520,13 +523,12 @@ function renderAccountCards(){
 function updateOneCard(){
   renderAccountCards();
   renderSummary(lastAccounts);
-  // Update summary + re-check selection when all done.
+  // Update summary + re-check automatic scheduling when all done.
   const all=lastAccounts||[];
   if(all.every(x=>x.credits||x.error||x.disabled)){
     // After all lazy credits loaded, the backend cache now has fresh exhausted
-    // flags. Re-fetch /accounts (light, cache-only) so ensureDefaultActiveAuth
-    // can pick the correct card — first load may have selected an account that
-    // turned out to be exhausted.
+    // flags. Re-fetch /accounts (light, cache-only) so automatic scheduling
+    // can move away from an account that turned out to be exhausted.
     api("/accounts").then(d=>{
       if(!d||d.error) return;
       const fresh=d.accounts||[];

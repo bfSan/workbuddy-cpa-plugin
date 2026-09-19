@@ -11,7 +11,7 @@ driven via the `pluginabi` RPC interface.
 | `ModelProvider` | `models.go`, `model_source_*.go`, `model_store.go`, `model_readiness.go` | Static `auto` fallback, configured authoritative catalog or authenticated per-account discovery, models.dev enrichment, persistent last-good cache, readiness gates, alias reverse-resolution, `oauth-excluded-models` filter |
 | `AuthProvider` | `oauth.go`, `auth_parse.go` (in `authfile.go` / `main.go`) | OAuth login flow (CN + Global), token refresh, auth file parse |
 | `Executor` | `executor.go`, `stream.go`, `payload.go` | Chat completions, streaming SSE pump, request body rewriting |
-| `Scheduler` | `scheduler.go`, `active_auth.go` | Optional panel-selected account routing (`scheduler_mode: credits`) |
+| `Scheduler` | `scheduler.go`, `active_auth.go` | Optional automatic account routing (`scheduler_mode: credits`) |
 | `ManagementAPI` | `management.go`, `panel.go`, `checkin.go`, `credits_handler.go`, `billing.go`, `usage_config.go`, `host_auth.go` | Dashboard, manual check-in, credits query, import credential, config |
 | `UsagePlugin` | `usage.go` | Forward every request's usage record to CPAMP |
 
@@ -60,7 +60,7 @@ authfile.go       authFileNameFor/sanitizeUIDForFileName/hostAuthPersist/deleteA
                   path safety checks
 
 scheduler.go      handleSchedulerPick + candidateDisabled + cachedCreditsScore
-active_auth.go    activeAuthID sticky state + pickActiveAuth + clearActiveAuthIfMatch
+active_auth.go    automatic activeAuthID state + pickActiveAuth + clearActiveAuthIfMatch
 
 cache.go          accountCache + accountDetailFlight singleflight + prune
 redact.go         redactSecrets + 4 regex + truncateRedacted + truncate

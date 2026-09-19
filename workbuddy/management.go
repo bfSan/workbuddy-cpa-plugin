@@ -175,7 +175,6 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import WorkBuddy credential JSON (nested or flat) into host auth store."},
 			{Method: http.MethodPost, Path: base + "/trial", Description: "Claim expert trial pack for one Global account (auth_index). One-time 250 credits / 14 days."},
-			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
 			{Method: http.MethodGet, Path: base + "/models", Description: "List the effective model catalog with its source and per-model cooldown state."},
@@ -255,8 +254,6 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportAuth(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/trial":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleClaimTrialWithCallback(req.ManagementRequest, req.HostCallbackID)))
-	case req.Method == http.MethodPost && path == base+"/select":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleSelectAuth(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/keepalive":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveNowWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodGet && path == base+"/keepalive/status":
@@ -389,7 +386,7 @@ func managementClientIP(req pluginapi.ManagementRequest) string {
 }
 
 // mutatingManagementPath reports whether the path performs a write (checkin,
-// import, trial claim, select, refresh, config toggle). Read endpoints pass.
+// import, trial claim, refresh, config toggle). Read endpoints pass.
 func mutatingManagementPath(path string) bool {
 	base := loadedManagementBasePath() + "/plugins/" + providerName
 	switch path {
@@ -398,7 +395,6 @@ func mutatingManagementPath(path string) bool {
 		base + "/checkin/config",
 		base + "/import",
 		base + "/trial",
-		base + "/select",
 		base + "/keepalive",
 		base + "/models",
 		base + "/models/action":
@@ -417,6 +413,9 @@ func mgmtJSONResponse(status int, v any) pluginapi.ManagementResponse {
 func mgmtHTMLResponse(body []byte) pluginapi.ManagementResponse {
 	h := http.Header{}
 	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	h.Set("Pragma", "no-cache")
+	h.Set("Expires", "0")
 	return pluginapi.ManagementResponse{StatusCode: http.StatusOK, Headers: h, Body: body}
 }
 

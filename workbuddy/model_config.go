@@ -278,6 +278,15 @@ func handleModelListQuery() map[string]any {
 			"hidden":      overlayHidden(overlay, id),
 			"custom":      overlayAdded(overlay, id),
 			"credits":     modelCreditsField(id),
+			// The catalog is wider than what serves chat: completion, image and
+			// unresolved entries are listed but flagged so an operator can see
+			// them without sending a request that will 11102/11103.
+			"kind":       string(classifyModelID(id)),
+			"kindLabel":  modelKindLabel(classifyModelID(id)),
+			"chatUsable": modelKindChatUsable(classifyModelID(id)),
+			// A served ID may be an upgraded preset alias; naming the alias is
+			// what makes the rename legible rather than looking arbitrary.
+			"preset": servedPresetAlias(id),
 			// Throttling is per (account, model), so the catalog-level view can
 			// only report how many accounts are affected by this model.
 			"coolingAccounts": cooldownModelCount(id),

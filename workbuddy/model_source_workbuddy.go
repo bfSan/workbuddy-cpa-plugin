@@ -144,10 +144,52 @@ func parseWorkBuddyV3Config(raw []byte) ([]modelFacts, error) {
 		return nil, fmt.Errorf("v3 config cli agent is missing")
 	}
 
-	// The cli agent's model list is the entitlement boundary, but it only
-	// carries IDs. The sibling rich catalog carries the per-model metadata
-	// (credits multiplier, display name, limits), so merge it in by ID.
-	// Entitlement still wins: unknown IDs never enter the list.
+	// Every entitlement ID must still be non-empty: a blank one is a schema
+	// problem, and skipping it would silently serve a short catalog.
+	for _, rawID := range modelIDs {
+		if strings.TrimSpace(rawID) == "" {
+			return nil, fmt.Errorf("v3 config cli agent model ID is empty")
+		}
+	}
+
+	// A preset whose concrete model is missing from entitlement is completed
+	// before the catalog is built: the account is entitled to the preset, so
+	// withholding the model behind it would silently shrink the catalog.
+	modelIDs = completePresetModels(modelIDs)
+
+	// The catalog is the union of entitlement and rich entries, not just the
+	// former. The cli agent's list is narrower than what the account can
+	// actually call — several chat models appear only in the rich catalog — and
+	// the rich list is also where the per-model metadata lives. Entitlement
+	// order leads, then remaining rich entries that can serve chat.
+	entitled := make(map[string]struct{}, len(modelIDs))
+	models := make([]modelFacts, 0, len(modelIDs)+len(response.Data.Models))
+	for _, rawID := range modelIDs {
+		id := strings.TrimSpace(rawID)
+		// A duplicate entitlement ID is still a schema problem: validateModelFacts
+		// would reject it, and serving a quietly de-duplicated list hides that.
+		if _, dup := entitled[id]; dup {
+			return nil, fmt.Errorf("v3 config cli agent model ID is duplicated")
+		}
+		entitled[id] = struct{}{}
+		models = append(models, modelFacts{ID: id})
+	}
+	for _, entry := range response.Data.Models {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" || entry.Disabled {
+			continue
+		}
+		if _, seen := entitled[id]; seen {
+			continue
+		}
+		entitled[id] = struct{}{}
+		if !modelKindChatUsable(classifyModelID(id)) {
+			continue
+		}
+		models = append(models, modelFacts{ID: id})
+	}
+
+	// Rich metadata applies by ID to whatever survived.
 	rich := make(map[string]workBuddyRichModelWire, len(response.Data.Models))
 	for _, entry := range response.Data.Models {
 		id := strings.TrimSpace(entry.ID)
@@ -156,24 +198,16 @@ func parseWorkBuddyV3Config(raw []byte) ([]modelFacts, error) {
 		}
 		rich[id] = entry
 	}
-	models := make([]modelFacts, 0, len(modelIDs))
-	for _, rawID := range modelIDs {
-		id := strings.TrimSpace(rawID)
-		// A blank entitlement ID is a schema problem, not something to skip:
-		// validateModelFacts rejects it so the snapshot degrades to last-good
-		// instead of silently serving a short catalog.
-		if id == "" {
-			return nil, fmt.Errorf("v3 config cli agent model ID is empty")
+	for i := range models {
+		entry, ok := rich[models[i].ID]
+		if !ok {
+			continue
 		}
-		facts := modelFacts{ID: id}
-		if entry, ok := rich[id]; ok {
-			facts.Name = strings.TrimSpace(entry.Name)
-			facts.Description = firstNonEmptyModelDescription(entry.DescriptionEn, entry.DescriptionZh)
-			facts.Credits = normalizeModelCredits(entry.Credits)
-			facts.ContextLength = entry.ContextWindow
-			facts.MaxCompletionTokens = entry.MaxTokens
-		}
-		models = append(models, facts)
+		models[i].Name = strings.TrimSpace(entry.Name)
+		models[i].Description = firstNonEmptyModelDescription(entry.DescriptionEn, entry.DescriptionZh)
+		models[i].Credits = normalizeModelCredits(entry.Credits)
+		models[i].ContextLength = entry.ContextWindow
+		models[i].MaxCompletionTokens = entry.MaxTokens
 	}
 	return validateModelFacts(models)
 }

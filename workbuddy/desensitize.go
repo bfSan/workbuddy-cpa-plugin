@@ -50,6 +50,7 @@ type featureRuntimeConfig struct {
 	enterpriseCredits  bool
 	configuredModels   []string
 	configuredCredits  map[string]string
+	presetTargets      map[string][]string
 }
 
 var featureRuntime atomic.Pointer[featureRuntimeConfig]
@@ -88,6 +89,11 @@ type featureConfigYAML struct {
 	// ModelCredits pins a multiplier per model ID, overriding whatever the
 	// upstream reported. Empty value clears the override.
 	ModelCredits yaml.Node `yaml:"model_credits"`
+	// PresetModels maps a desktop preset alias (fast/balanced/deep style) to
+	// the concrete model IDs behind it. Unset means "serve the alias as
+	// itself": the plugin never guesses which concrete model a preset resolves
+	// to, because guessing silently changes the response and the billed rate.
+	PresetModels yaml.Node `yaml:"preset_models"`
 }
 
 func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
@@ -125,6 +131,10 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	presets, err := normalizedPresetModelsConfig(doc.PresetModels)
+	if err != nil {
+		return nil, err
+	}
 	return &featureRuntimeConfig{
 		desensitizeEnabled: doc.Desensitize != nil && *doc.Desensitize,
 		desensitizeTerms:   terms,
@@ -134,6 +144,7 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 		enterpriseCredits:  doc.EnterpriseCredits != nil && *doc.EnterpriseCredits,
 		configuredModels:   models,
 		configuredCredits:  credits,
+		presetTargets:      presets,
 	}, nil
 }
 
@@ -433,4 +444,77 @@ func (m *desensitizeMatcher) replace(input string) string {
 		}
 		input = next
 	}
+}
+
+// normalizedPresetModelsConfig decodes `preset_models` into alias -> concrete
+// model IDs. Values are accepted as a list of IDs or a single ID string.
+//
+// The mapping is operator-owned and validated like every other config field:
+// blank entries, duplicates and over-long IDs are rejected rather than silently
+// changing which model a request is routed to.
+func normalizedPresetModelsConfig(node yaml.Node) (map[string][]string, error) {
+	if node.Kind == 0 {
+		return nil, nil
+	}
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" && node.Style&yaml.TaggedStyle == 0 {
+		return nil, nil
+	}
+	if node.Kind != yaml.MappingNode || node.Tag != "!!map" || node.Style&yaml.TaggedStyle != 0 {
+		return nil, errors.New("preset_models must be a map of preset alias to model id(s)")
+	}
+	out := make(map[string][]string, len(node.Content)/2)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" || key.Style&yaml.TaggedStyle != 0 {
+			return nil, errors.New("preset_models keys must be strings")
+		}
+		alias := strings.TrimSpace(key.Value)
+		if alias == "" {
+			return nil, errors.New("preset_models keys must not be empty")
+		}
+		if len(alias) > maxDiscoveredModelIDBytes {
+			return nil, errors.New("preset_models key exceeds maximum ID length")
+		}
+		if value.Kind == yaml.ScalarNode && value.Tag == "!!null" && node.Style&yaml.TaggedStyle == 0 {
+			return nil, errors.New("preset_models values must not be empty")
+		}
+		var ids []string
+		switch {
+		case value.Kind == yaml.ScalarNode && value.Tag == "!!str":
+			ids = []string{value.Value}
+		case value.Kind == yaml.SequenceNode && value.Tag == "!!seq":
+			for _, item := range value.Content {
+				if item.Kind != yaml.ScalarNode || item.Tag != "!!str" || item.Style&yaml.TaggedStyle != 0 {
+					return nil, errors.New("preset_models values must be strings")
+				}
+				ids = append(ids, item.Value)
+			}
+		default:
+			return nil, errors.New("preset_models values must be a model id or a list of model ids")
+		}
+		cleaned := make([]string, 0, len(ids))
+		seen := make(map[string]struct{}, len(ids))
+		for _, raw := range ids {
+			id := strings.TrimSpace(raw)
+			if id == "" {
+				return nil, errors.New("preset_models values must not be empty")
+			}
+			if len(id) > maxDiscoveredModelIDBytes {
+				return nil, errors.New("preset_models value exceeds maximum ID length")
+			}
+			if _, dup := seen[id]; dup {
+				return nil, errors.New("preset_models values must not be duplicated")
+			}
+			seen[id] = struct{}{}
+			cleaned = append(cleaned, id)
+		}
+		if len(cleaned) == 0 {
+			return nil, errors.New("preset_models values must not be empty")
+		}
+		if _, dup := out[alias]; dup {
+			return nil, errors.New("preset_models keys must not be duplicated")
+		}
+		out[alias] = cleaned
+	}
+	return out, nil
 }

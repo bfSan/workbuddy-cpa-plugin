@@ -22,35 +22,83 @@ func TestParseWorkBuddyV3ConfigSelectsCompleteCLIList(t *testing.T) {
 	}
 }
 
-// TestParseWorkBuddyV3ConfigMergesRichCatalog is why credits sync exists: the
-// cli agent's list is only IDs, while the sibling data.models catalog carries
-// the per-model multiplier. Entitlement must still come from the agent list.
+// TestParseWorkBuddyV3ConfigMergesRichCatalog covers both reasons the rich
+// catalog matters: the cli agent's list is only IDs (no multiplier, no display
+// name), and it omits models the account can actually call. The catalog is the
+// union, with entitlement order leading.
 func TestParseWorkBuddyV3ConfigMergesRichCatalog(t *testing.T) {
 	raw := []byte(`{"code":0,"data":{
 	  "agents":[{"name":"cli","models":["serve-alpha","serve-beta"]}],
 	  "models":[
 	    {"id":"serve-alpha","name":"Alpha","descriptionEn":"Alpha EN","credits":"x0.29","maxInputTokens":4096,"maxOutputTokens":512},
 	    {"id":"serve-beta","name":"Beta","descriptionZh":"Beta ZH","credits":"x2.20 credits"},
-	    {"id":"not-entitled","name":"Ghost","credits":"x9.99"}
+	    {"id":"entitled-elsewhere","name":"Extra","credits":"x1.11"}
 	  ]}}`)
 	got, err := parseWorkBuddyV3Config(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("only entitled models should survive, got %#v", got)
+	if len(got) != 3 {
+		t.Fatalf("entitled plus rich-only chat models should survive, got %#v", got)
 	}
-	if got[0].Credits != "x0.29" || got[1].Credits != "x2.20 credits" {
+	// Entitlement order leads.
+	if got[0].ID != "serve-alpha" || got[1].ID != "serve-beta" || got[2].ID != "entitled-elsewhere" {
+		t.Fatalf("entitlement order should lead, got %#v", got)
+	}
+	if got[0].Credits != "x0.29" || got[1].Credits != "x2.20 credits" || got[2].Credits != "x1.11" {
 		t.Fatalf("credits not merged: %#v", got)
 	}
 	if got[0].Name != "Alpha" || got[0].Description != "Alpha EN" {
 		t.Fatalf("rich metadata not merged: %#v", got[0])
 	}
 	if got[1].Description != "Beta ZH" {
-		t.Fatalf(" Zh description should be used when EN is absent: %#v", got[1])
+		t.Fatalf("Zh description should be used when EN is absent: %#v", got[1])
 	}
 	if got[0].ContextLength == nil || *got[0].ContextLength != 4096 || got[0].MaxCompletionTokens == nil || *got[0].MaxCompletionTokens != 512 {
 		t.Fatalf("limits not merged: %#v", got[0])
+	}
+}
+
+// TestParseWorkBuddyV3ConfigSkipsNonChatRichEntries: the rich catalog also
+// carries text-completion, image and unresolved entries. Those would answer a
+// chat request with 11102/11103, so they are excluded from the served catalog.
+func TestParseWorkBuddyV3ConfigSkipsNonChatRichEntries(t *testing.T) {
+	raw := []byte(`{"code":0,"data":{
+	  "agents":[{"name":"cli","models":["serve-chat"]}],
+	  "models":[
+	    {"id":"serve-chat","credits":"x0.10"},
+	    {"id":"completion-gf"},
+	    {"id":"default-1.1"},
+	    {"id":"hunyuan-image-alpha"},
+	    {"id":"hunyuan-image-alpha-edit"},
+	    {"id":"something-taco-completion"},
+	    {"id":"tiny-3b"},
+	    {"id":"lite"},
+	    {"id":"default-model"},
+	    {"id":"primary-model"},
+	    {"id":"disabled-one","disabled":true}
+	  ]}}`)
+	got, err := parseWorkBuddyV3Config(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "serve-chat" {
+		t.Fatalf("non-chat rich entries should be excluded, got %#v", got)
+	}
+}
+
+// Entitlement wins even for a non-chat ID: the account is entitled to it, so
+// the gateway's own list is authoritative over shape guessing.
+func TestParseWorkBuddyV3ConfigKeepsEntitledNonChat(t *testing.T) {
+	raw := []byte(`{"code":0,"data":{
+	  "agents":[{"name":"cli","models":["lite"]}],
+	  "models":[{"id":"lite"}]}}`)
+	got, err := parseWorkBuddyV3Config(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "lite" {
+		t.Fatalf("entitled entries should survive, got %#v", got)
 	}
 }
 
@@ -539,5 +587,58 @@ func syntheticStoredAuth(t *testing.T, realm workBuddyRealm) *storedAuth {
 	return &storedAuth{
 		Auth:    storedTokens{AccessToken: syntheticAccessToken(t, issuer), Domain: domain},
 		Account: storedAccount{UID: "uid-1", EnterpriseID: "enterprise-1"},
+	}
+}
+
+// TestParseWorkBuddyV3ConfigCompletesPreset: an entitled preset whose concrete
+// model is missing upstream is completed, not dropped — the account is entitled
+// to the preset, so withholding the model behind it silently shrinks the list.
+func TestParseWorkBuddyV3ConfigCompletesPreset(t *testing.T) {
+	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a", "concrete-b"}})
+	defer restore()
+	raw := []byte(`{"code":0,"data":{
+	  "agents":[{"name":"cli","models":["preset-a","serve-chat"]}],
+	  "models":[{"id":"preset-a"},{"id":"serve-chat"}]}}`)
+	got, err := parseWorkBuddyV3Config(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].ID != "preset-a" || got[1].ID != "serve-chat" || got[2].ID != "concrete-a" {
+		t.Fatalf("preset should be completed with its concrete model, got %#v", got)
+	}
+}
+
+// Completion stops at the first configured target that is already present, so
+// a preset never multiplies the catalog.
+func TestParseWorkBuddyV3ConfigCompletesPresetOnce(t *testing.T) {
+	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a", "concrete-b"}})
+	defer restore()
+	raw := []byte(`{"code":0,"data":{
+	  "agents":[{"name":"cli","models":["preset-a"]}],
+	  "models":[{"id":"preset-a"},{"id":"concrete-b"}]}}`)
+	got, err := parseWorkBuddyV3Config(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// concrete-b is only in the rich catalog, not in entitlement, so completion
+	// still adds the preset's first concrete model. It lands right after the
+	// entitlement entries, ahead of the rich-only ones.
+	if len(got) != 3 || got[0].ID != "preset-a" || got[1].ID != "concrete-a" || got[2].ID != "concrete-b" {
+		t.Fatalf("expected one completion, got %#v", got)
+	}
+}
+
+// With no mapping configured the plugin must not guess: a preset is served as
+// itself rather than being rewritten to some guessed concrete model.
+func TestParseWorkBuddyV3ConfigWithoutPresetTargetsKeepsAlias(t *testing.T) {
+	raw := []byte(`{"code":0,"data":{
+	  "agents":[{"name":"cli","models":["preset-a","serve-chat"]}],
+	  "models":[{"id":"preset-a"},{"id":"serve-chat"}]}}`)
+	got, err := parseWorkBuddyV3Config(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "preset-a" {
+		t.Fatalf("alias must be kept when no mapping is configured, got %#v", got)
 	}
 }

@@ -58,6 +58,20 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .model-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card)}
 .model-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;min-width:0;flex:1 1 auto;overflow-wrap:anywhere}
 .model-name{font-size:12px;flex:0 0 auto;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* 倍率内联编辑：固定宽度，避免输入内容长短把整行挤动 */
+.model-credit{flex:0 0 92px;width:92px;padding:3px 8px;font-size:12px;font-variant-numeric:tabular-nums}
+.model-credit:disabled{opacity:.5}
+.cd-badge{flex:0 0 auto;min-width:52px;text-align:center;font-size:11px;font-weight:600;padding:3px 8px;border-radius:99px;
+  background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-variant-numeric:tabular-nums}
+.cd-badge.pinned{background:var(--acc-ring);color:var(--acc);border-color:var(--acc)}
+.cd-badge.free{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
+.cd-badge.none{opacity:.55}
+/* 非聊天模型的形状标签：告诉操作者别往它发聊天请求 */
+.badge.kind-completion,.badge.kind-image,.badge.kind-inline{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
+.badge.kind-unknown{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
+.badge.preset{background:var(--acc-ring);color:var(--acc);border:1px solid var(--acc)}
+.model-row:has(.badge.kind-unknown) .model-id,.model-row:has(.badge.kind-image) .model-id{opacity:.62}
 .model-actions{display:flex;gap:6px;flex:0 0 auto;margin-left:auto}
 .model-tags{display:flex;gap:4px;flex:0 0 auto}
 .model-actions .ftag{padding:2px 8px;font-size:12px}
@@ -228,13 +242,6 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <div id="modelAddRow" style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
       <input id="modelAddInput" class="field-input" type="text" placeholder="添加自定义模型 ID" aria-label="添加自定义模型 ID">
       <button type="button" class="ftag" onclick="addModel()">添加</button>
-    </div>
-    <div id="creditsEditRow" style="display:none;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
-      <span class="mut" id="creditsEditTitle" style="font-size:12px"></span>
-      <input id="creditsEditInput" class="field-input" type="text" placeholder="如 x0.29，留空恢复上游值" aria-label="积分倍率">
-      <button type="button" class="ftag" onclick="saveModelCredits()">保存</button>
-      <button type="button" class="ftag" onclick="closeCreditsEditor()">取消</button>
-      <span class="mut" id="creditsEditHint" style="font-size:11px;flex:1 1 100%"></span>
     </div>
   </div>
   <footer class="footer">当前出口 IP：<strong id="egressIp" role="status">检测中…</strong></footer>
@@ -766,6 +773,10 @@ async function loadModels(toast){
     if(Array.isArray(d.configuredModels)&&d.configuredModels.length){
       parts.push("YAML models 已配置为完整目录");
     }
+    // The catalog is filtered by shape, not by hand: say how many entries are
+    // listed but not chat-usable so the count never looks like a bug.
+    const notChat=lastModels.filter(m=>m.chatUsable===false).length;
+    if(notChat) parts.push(`${notChat} 个非聊天模型（已标注，发聊天请求会被上游拒绝）`);
     if(!d.persistent) parts.push("调整仅保存在内存中，CPA 重启后恢复");
     hintEl.textContent=parts.join(" · ");
     renderModels();
@@ -785,28 +796,42 @@ function renderModels(){
   box.innerHTML=`<div class="model-rows">`+lastModels.map((m,i)=>{
     const id=String(m.id||"");
     const name=m.displayName||m.name||"";
+    const escId=esc(id);
     const tags=[];
     if(m.custom) tags.push(`<span class="badge">自定义</span>`);
     if(Number(m.coolingAccounts)>0) tags.push(`<span class="badge cooling" title="${Number(m.coolingAccounts)} 个账号的这个模型正在冷却">冷却 ${Number(m.coolingAccounts)}</span>`);
+    // The catalog is wider than what serves chat; label the shape so an
+    // operator is not surprised by a 11102 from a model that looked selectable.
+    const kind=String(m.kind||"");
+    if(kind&&kind!=="chat"){
+      tags.push(`<span class="badge kind-${esc(kind)}" title="该模型不是聊天模型，直接发请求会被上游拒绝">${esc(m.kindLabel||kind)}</span>`);
+    }
+    // A preset alias is served under the concrete model behind it, so say which
+    // alias produced the row instead of leaving an unexplained rename.
+    if(m.preset){
+      tags.push(`<span class="badge preset" title="桌面端预设 ${esc(m.preset)}，实际按 ${escId} 转发">预设 ${esc(m.preset)}</span>`);
+    }
     const cd=m.credits||{};
     const cdValue=String(cd.value||"");
-    if(cdValue){
-      const pinned=cd.source==="override";
-      const rate=Number(cd.rate||0);
-      // Upstream reports promotions as x0.00; call that out instead of
-      // rendering a bare zero that reads like "unknown".
-      const free=cdValue!==""&&rate===0;
-      const label=free?"免费":esc(cdValue.replace(/^x/i,"").replace(/\s*credits?$/i,""))+"x";
-      tags.push(`<span class="badge ${free?"ok":""}" title="${pinned?"本地固定":"上游同步"}：${esc(cdValue)}">${label}</span>`);
-    }
+    const pinned=cd.source==="override";
+    const rate=Number(cd.rate||0);
+    // Upstream reports promotions as x0.00; call that out instead of
+    // rendering a bare zero that reads like "unknown".
+    const free=cdValue!==""&&rate===0;
+    const cdLabel=free?"免费":esc(cdValue.replace(/^x/i,"").replace(/\s*credits?$/i,""))+"x";
     return `<div class="model-row">
-      <span class="model-id">${esc(id)}</span>
+      <span class="model-id" title="${escId}">${escId}</span>
       <span class="model-name mut">${esc(name)}</span>
+      <input class="field-input model-credit" type="text" data-credit-model="${escId}"
+        value="${esc(cdValue)}" placeholder="倍率"
+        title="${pinned?`本地固定：${esc(cdValue)}`:cdValue?`上游同步：${esc(cdValue)}`:"上游未上报"}"
+        aria-label="${escId} 的积分倍率" onchange="saveModelCredit('${escId}',this.value,this)"
+        onkeydown="if(event.key==='Enter'){this.blur()}else if(event.key==='Escape'){renderModels()}">
+      ${cdValue?`<span class="cd-badge${pinned?" pinned":""}${free?" free":""}" title="${pinned?"本地固定":"上游同步"}">${cdLabel}</span>`:`<span class="cd-badge none">—</span>`}
       <span class="model-actions">
-        <button type="button" class="ftag" onclick="openCreditsEditor('${esc(id)}')" aria-label="设置 ${esc(id)} 的积分倍率" title="设置积分倍率">倍率</button>
-        <button type="button" class="ftag" onclick="moveModel('${esc(id)}',-1)" aria-label="上移 ${esc(id)}"${i===0?" disabled":""}>↑</button>
-        <button type="button" class="ftag" onclick="moveModel('${esc(id)}',1)" aria-label="下移 ${esc(id)}"${i===lastModels.length-1?" disabled":""}>↓</button>
-        <button type="button" class="ftag" onclick="toggleModel('${esc(id)}')">${m.custom?"移除":"隐藏"}</button>
+        <button type="button" class="ftag" onclick="moveModel('${escId}',-1)" aria-label="上移 ${escId}"${i===0?" disabled":""}>↑</button>
+        <button type="button" class="ftag" onclick="moveModel('${escId}',1)" aria-label="下移 ${escId}"${i===lastModels.length-1?" disabled":""}>↓</button>
+        <button type="button" class="ftag" onclick="toggleModel('${escId}')">${m.custom?"移除":"隐藏"}</button>
       </span>
       ${tags.length?`<span class="model-tags">${tags.join("")}</span>`:""}
     </div>`;
@@ -841,41 +866,23 @@ async function addModel(){
   input.value="";
   await modelAction("add",id);
 }
-// 积分倍率：本地固定优先于上游同步，留空保存即恢复上游值。
-let creditsEditModel="";
-function openCreditsEditor(id){
-  const current=lastModels.find(m=>String(m.id)===String(id));
-  const cd=(current&&current.credits)||{};
-  creditsEditModel=String(id||"");
-  const row=document.getElementById("creditsEditRow");
-  const title=document.getElementById("creditsEditTitle");
-  const hint=document.getElementById("creditsEditHint");
-  const input=document.getElementById("creditsEditInput");
-  if(!row||!input) return;
-  title.textContent=`积分倍率 · ${creditsEditModel}`;
-  hint.textContent=(cd.value?`当前 ${cd.value}（${cd.source==="override"?"本地固定":"上游同步"}）`:"上游未上报")+"。留空保存即恢复上游值。";
-  input.value=cd.source==="override"?String(cd.value||""):"";
-  row.style.display="flex";
-  input.focus();
-}
-function closeCreditsEditor(){
-  creditsEditModel="";
-  const row=document.getElementById("creditsEditRow");
-  if(row) row.style.display="none";
-}
-async function saveModelCredits(){
-  const input=document.getElementById("creditsEditInput");
-  const id=creditsEditModel;
-  if(!id){ closeCreditsEditor(); return; }
-  const value=String((input&&input.value)||"").trim();
+// 积分倍率：每行内联编辑。输入框里就是当前生效值，留空保存即恢复上游值。
+async function saveModelCredit(id, value, input){
+  const model=String(id||"").trim();
+  if(!model) return;
+  const next=String(value||"").trim();
+  const before=(lastModels.find(m=>String(m.id)===model)||{}).credits||{};
+  if(next===String(before.value||"")) return; // 没变就别发请求
+  if(input) input.disabled=true;
   try{
     await api("/models/credits",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({model:id,credits:value})});
-    closeCreditsEditor();
+      body:JSON.stringify({model:model,credits:next})});
     await loadModels(false);
-    toast(value?"倍率已固定":"已恢复上游倍率",value?"ok":"warn",value?`${id} → ${value}`:`${id}`);
+    toast(next?"倍率已固定":"已恢复上游倍率",next?"ok":"warn",next?`${model} → ${next}`:`${model}`);
   }catch(e){
     toast("倍率设置失败","err",String(e&&e.message||e));
+    renderModels(); // 还原输入框
+    if(input) input.disabled=false;
   }
 }
 async function api(path, opts={}){

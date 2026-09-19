@@ -95,3 +95,26 @@ func TestRegistrationDocumentsConfiguredModelsContract(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistrationDocumentsHiddenModelsContract(t *testing.T) {
+	count := 0
+	var hidden pluginapi.ConfigField
+	for _, field := range wbRegistration().Metadata.ConfigFields {
+		if field.Name == "hidden_models" {
+			count++
+			hidden = field
+		}
+	}
+	if count != 1 {
+		t.Fatalf("hidden_models config field count = %d, want 1", count)
+	}
+	if hidden.Type != pluginapi.ConfigFieldTypeArray {
+		t.Fatalf("hidden_models config field type = %q, want array", hidden.Type)
+	}
+	description := strings.ToLower(hidden.Description)
+	for _, required := range []string{"plugin-owned", "deny-list", "removed", "cpa", "registry", "/v1/models", "persist"} {
+		if !strings.Contains(description, required) {
+			t.Errorf("hidden_models description missing %q: %q", required, hidden.Description)
+		}
+	}
+}

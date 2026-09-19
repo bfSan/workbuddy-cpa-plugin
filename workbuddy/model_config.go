@@ -9,9 +9,10 @@
 //	order - pin listed model IDs to the front, in the given order
 //	add   - append synthetic model IDs that upstream never reported
 //
-// The overlay is process-local: it survives config reloads but not a CPA
-// restart. It is intentionally separate from the YAML `models` setting so an
-// operator can keep upstream discovery and still curate the result.
+// Hide is backed by the plugin's YAML `hidden_models` setting and restored on
+// every config reload. Order and add remain process-local overlays. Keeping
+// hide with the plugin avoids using CPA's host-level model exclusion while
+// still letting the plugin filter models before CPA registers them.
 package main
 
 import (
@@ -360,7 +361,8 @@ func handleModelListQuery() map[string]any {
 		"configuredModels": configured,
 		"overlay":          overlay,
 		"revision":         revision,
-		"persistent":       false,
+		"persistent":       true,
+		"persistentFields": []string{"hide"},
 	}
 }
 
@@ -447,11 +449,13 @@ func handleModelOverlayWrite(req pluginapi.ManagementRequest) map[string]any {
 	if err != nil {
 		return map[string]any{"success": false, "error": err.Error()}
 	}
+	syncHiddenModelsConfig(stored.Overlay.Hide)
 	return map[string]any{
-		"success":    true,
-		"overlay":    stored.Overlay,
-		"revision":   stored.Revision,
-		"persistent": false,
+		"success":          true,
+		"overlay":          stored.Overlay,
+		"revision":         stored.Revision,
+		"persistent":       false,
+		"persistentFields": []string{"hide"},
 	}
 }
 
@@ -510,15 +514,54 @@ func handleModelOverlayAction(req pluginapi.ManagementRequest) map[string]any {
 	default:
 		return map[string]any{"success": false, "error": "action must be hide, restore, move or add"}
 	}
+	action := strings.ToLower(strings.TrimSpace(body.Action))
 	stored, err := storeModelOverlay(current)
 	if err != nil {
 		return map[string]any{"success": false, "error": err.Error()}
 	}
+	syncHiddenModelsConfig(stored.Overlay.Hide)
 	return map[string]any{
-		"success":    true,
-		"overlay":    stored.Overlay,
-		"revision":   stored.Revision,
-		"persistent": false,
+		"success":          true,
+		"overlay":          stored.Overlay,
+		"revision":         stored.Revision,
+		"persistent":       action == "hide" || action == "restore",
+		"persistentFields": []string{"hide"},
+	}
+}
+
+// syncOverlayHiddenModels makes hidden_models authoritative after a config
+// reload while preserving the in-memory order/add overlays.
+func syncOverlayHiddenModels(hidden []string) {
+	next := append([]string(nil), hidden...)
+	overlayMu.Lock()
+	defer overlayMu.Unlock()
+	if sameStringList(overlayState.Overlay.Hide, next) {
+		return
+	}
+	overlayState.Overlay.Hide = next
+	overlayState.Revision++
+}
+
+func sameStringList(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// syncHiddenModelsConfig updates the in-process feature snapshot after a
+// successful overlay edit. The management panel separately PATCHes
+// plugins.configs.workbuddy.hidden_models, which persists the same list and
+// triggers CPA to re-register models.
+func syncHiddenModelsConfig(hidden []string) {
+	if cfg := currentFeatureRuntime(); cfg != nil {
+		cfg.hiddenModels = append([]string(nil), hidden...)
+		featureRuntime.Store(cfg)
 	}
 }
 

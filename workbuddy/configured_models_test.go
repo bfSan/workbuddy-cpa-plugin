@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,90 @@ func TestParseFeatureRuntimeConfiguredModelsDynamicDefaults(t *testing.T) {
 				t.Fatalf("configured models = %#v, want dynamic discovery", cfg.configuredModels)
 			}
 		})
+	}
+}
+
+func TestParseFeatureRuntimeHiddenModelsIsPluginOwned(t *testing.T) {
+	cfg, err := parseFeatureRuntime([]byte("hidden_models: [' serve-alpha ', serve-beta]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameStrings(cfg.hiddenModels, []string{"serve-alpha", "serve-beta"}) {
+		t.Fatalf("hidden models = %#v", cfg.hiddenModels)
+	}
+}
+
+func TestFilterHiddenModels(t *testing.T) {
+	oldFeatures := featureRuntime.Load()
+	t.Cleanup(func() { featureRuntime.Store(oldFeatures) })
+	cfg, err := parseFeatureRuntime([]byte("hidden_models: [serve-hidden]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(cfg)
+
+	got := idsOf(filterHiddenModels([]pluginapi.ModelInfo{
+		defaultModelInfo("serve-visible", ""),
+		defaultModelInfo("serve-hidden", ""),
+	}))
+	if want := []string{"serve-visible"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("filtered models = %v, want %v", got, want)
+	}
+}
+
+func TestCommitFeatureRuntimeRestoresHiddenOverlay(t *testing.T) {
+	restoreOverlay := setModelOverlayForTest(modelOverlay{
+		Hide:  []string{"old-hidden"},
+		Order: []string{"pinned"},
+		Add:   []string{"custom"},
+	})
+	defer restoreOverlay()
+	oldFeatures := featureRuntime.Load()
+	t.Cleanup(func() { featureRuntime.Store(oldFeatures) })
+
+	cfg, err := parseFeatureRuntime([]byte("hidden_models: [new-hidden, second-hidden]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentModelRuntime().commitFeatureRuntime(cfg)
+
+	overlay, _ := loadedModelOverlay()
+	if want := []string{"new-hidden", "second-hidden"}; !reflect.DeepEqual(overlay.Hide, want) {
+		t.Fatalf("overlay hide = %v, want %v", overlay.Hide, want)
+	}
+	if want := []string{"pinned"}; !reflect.DeepEqual(overlay.Order, want) {
+		t.Fatalf("overlay order = %v, want %v", overlay.Order, want)
+	}
+	if want := []string{"custom"}; !reflect.DeepEqual(overlay.Add, want) {
+		t.Fatalf("overlay add = %v, want %v", overlay.Add, want)
+	}
+}
+
+func TestCommitFeatureRuntimeClearsHiddenOverlayWithoutDroppingOrderOrAdd(t *testing.T) {
+	restoreOverlay := setModelOverlayForTest(modelOverlay{
+		Hide:  []string{"old-hidden"},
+		Order: []string{"pinned"},
+		Add:   []string{"custom"},
+	})
+	defer restoreOverlay()
+	oldFeatures := featureRuntime.Load()
+	t.Cleanup(func() { featureRuntime.Store(oldFeatures) })
+
+	cfg, err := parseFeatureRuntime(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentModelRuntime().commitFeatureRuntime(cfg)
+
+	overlay, _ := loadedModelOverlay()
+	if len(overlay.Hide) != 0 {
+		t.Fatalf("overlay hide = %v, want empty", overlay.Hide)
+	}
+	if want := []string{"pinned"}; !reflect.DeepEqual(overlay.Order, want) {
+		t.Fatalf("overlay order = %v, want %v", overlay.Order, want)
+	}
+	if want := []string{"custom"}; !reflect.DeepEqual(overlay.Add, want) {
+		t.Fatalf("overlay add = %v, want %v", overlay.Add, want)
 	}
 }
 

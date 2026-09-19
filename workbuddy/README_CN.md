@@ -12,7 +12,8 @@
   CN 和 Global 共用一个插件、一份配置。
 - **模型目录**：默认按已认证账号发现并缓存可用模型，也可以用 YAML 中的完整
   列表替代 WorkBuddy discovery。两种模式都会用 models.dev 补充缺失的 metadata。
-  宿主侧 `oauth-model-alias` / `oauth-excluded-models` 配置仍然生效。
+  宿主侧 `oauth-model-alias` / `oauth-excluded-models` 配置仍然生效。插件自身的
+  `hidden_models` 是独立的插件级模型隐藏列表。
 - **执行器** — OpenAI 兼容 chat completions，流式（真 SSE，走 `host.stream.emit`）
   和非流式（SSE 折叠成单个 completion）都支持。内置 `tool_choice` 归一、
   Claude Code 模板清洗、按区域注入 system message。
@@ -125,8 +126,9 @@ plugins:
       management_key: ""
 ```
 
-模型 alias 和排除走 CPA 原生 `oauth-model-alias` 和 `oauth-excluded-models`
-配置，无需插件侧重复。
+模型 alias 和宿主级排除可继续使用 CPA 原生 `oauth-model-alias` 和
+`oauth-excluded-models`。面板里的「隐藏」不使用宿主排除配置，而是写入
+`plugins.configs.workbuddy.hidden_models`，由插件在返回模型列表前过滤。
 
 设置 `proxy-url` 后，chat、billing/签到/trial、token refresh、
 `executor.http_request`、usage 上报、OAuth state/token/account 请求和 usage
@@ -165,7 +167,7 @@ WorkBuddy catalog cache，也不会删除已有 cache。models.dev metadata 仍�
 
 | 字段 | 作用 |
 |---|---|
-| `hide` | 从生效列表中剔除指定模型 ID |
+| `hide` | 从生效列表中剔除指定模型 ID；面板操作会持久化到插件配置 |
 | `order` | 把指定模型 ID 按给定顺序钉到列表前面 |
 | `add` | 追加上游未上报的自定义模型 ID |
 
@@ -184,8 +186,13 @@ POST /models/action   单条编辑 {"action":"hide|restore|move|add","id":"...",
 被隐藏的模型仍会保留在管理面板中并标记为「已隐藏」，可以点「恢复」重新对外提供；
 只是对客户端 API 不会展示。隐藏项不参与上移、下移。
 
-**overlay 只保存在插件进程内存中**：配置重载不会丢，CPA 重启后会恢复默认。
-需要长期固定的模型清单请写进 YAML `models`，那是持久化的完整覆盖。
+`hide` 持久化在 `plugins.configs.workbuddy.hidden_models`，配置重载和 CPA
+重启后都会恢复。`order` 和 `add` 目前仍只保存在插件进程内存中，CPA 重启后
+恢复默认；需要长期固定完整模型清单时请写进 YAML `models`。
+
+插件过滤发生在 `model.static` / `model.for_auth` 返回给 CPA 之前，因此被隐藏
+的模型不会进入 CPA 的全局模型注册表，也不会出现在 `/v1/models`。宿主配置里的
+`oauth-excluded-models` 保持为空即可，不需要用它实现插件面板的隐藏功能。
 
 ## 模型维度冷却
 

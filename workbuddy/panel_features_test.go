@@ -56,6 +56,7 @@ func TestPanelEditsDesensitizeThroughGenericPluginConfigAPI(t *testing.T) {
 		`fetch(MANAGEMENT_BASE_PATH+path`,
 		`api("/desensitize")`,
 		`managementAPI("/plugins/workbuddy/config",{method:"PATCH"`,
+		`JSON.stringify({hidden_models:hidden})`,
 		`JSON.stringify({desensitize_terms:null})`,
 		`JSON.stringify({desensitize:false,desensitize_terms:null})`,
 	} {

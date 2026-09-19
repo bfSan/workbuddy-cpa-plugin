@@ -8,7 +8,7 @@ driven via the `pluginabi` RPC interface.
 
 | Capability | Implementation file | What it does |
 |---|---|---|
-| `ModelProvider` | `models.go`, `model_source_*.go`, `model_store.go`, `model_readiness.go` | Static `auto` fallback, configured authoritative catalog or authenticated per-account discovery, models.dev enrichment, persistent last-good cache, readiness gates, alias reverse-resolution, `oauth-excluded-models` filter |
+| `ModelProvider` | `models.go`, `model_source_*.go`, `model_store.go`, `model_readiness.go`, `model_config.go` | Static `auto` fallback, configured authoritative catalog or authenticated per-account discovery, models.dev enrichment, persistent last-good cache, readiness gates, alias reverse-resolution, plugin-owned `hidden_models` filter, host `oauth-excluded-models` filter |
 | `AuthProvider` | `oauth.go`, `auth_parse.go` (in `authfile.go` / `main.go`) | OAuth login flow (CN + Global), token refresh, auth file parse |
 | `Executor` | `executor.go`, `stream.go`, `payload.go` | Chat completions, streaming SSE pump, request body rewriting |
 | `Scheduler` | `scheduler.go`, `active_auth.go` | Optional automatic account routing (`scheduler_mode: credits`) |
@@ -249,8 +249,9 @@ panel.html → /v0/management/plugins/workbuddy/accounts
   plugin never writes auth files directly to disk, always via host RPC.
 - **Model registration**: `model.static` returns only `auto`; the first
   `model.for_auth` uses the configured authoritative catalog or performs
-  authenticated discovery and returns dynamic models. Host `oauth-model-alias`
-  / `oauth-excluded-models` is applied to each response.
+  authenticated discovery and returns dynamic models. The plugin-owned
+  `hidden_models` filter runs before the response reaches CPA, then host
+  `oauth-model-alias` / `oauth-excluded-models` behavior still applies.
 - **Streaming**: `host.stream.emit` / `host.stream.close` — async SSE
   chunks pushed to the client without blocking the executor return.
 - **Usage**: `usage.handle` RPC — host calls `UsagePlugin.HandleUsage`

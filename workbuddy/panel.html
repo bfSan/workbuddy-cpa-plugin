@@ -769,7 +769,8 @@ async function loadModels(toast){
     // listed but not chat-usable so the count never looks like a bug.
     const notChat=lastModels.filter(m=>m.chatUsable===false).length;
     if(notChat) parts.push(`${notChat} 个非聊天模型（已标注，发聊天请求会被上游拒绝）`);
-    if(!d.persistent) parts.push("调整仅保存在内存中，CPA 重启后恢复");
+    if(d.persistent) parts.push("隐藏列表保存在插件配置中");
+    if(Array.isArray(d.overlay&&d.overlay.order)&&d.overlay.order.length||Array.isArray(d.overlay&&d.overlay.add)&&d.overlay.add.length) parts.push("排序和自定义模型仅保存在内存中");
     hintEl.textContent=parts.join(" · ");
     renderModels();
   }catch(e){
@@ -832,8 +833,16 @@ function renderModels(){
 
 async function modelAction(action,id,extra){
   try{
-    await api("/models/action",{method:"POST",headers:{"Content-Type":"application/json"},
+    const d=await api("/models/action",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify(Object.assign({action:action,id:id},extra||{}))});
+    if(action==="hide"||action==="restore"){
+      const overlay=d&&d.overlay?d.overlay:{};
+      const hidden=Array.isArray(overlay.hide)?overlay.hide:[];
+      await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({hidden_models:hidden})});
+    }else if(action==="move"||action==="add"){
+      toast("排序和自定义模型目前仅保存在内存中，CPA 重启后恢复","warn");
+    }
     await loadModels(false);
   }catch(e){
     toast("模型操作失败","err",String(e&&e.message||e));

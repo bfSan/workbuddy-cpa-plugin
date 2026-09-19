@@ -134,6 +134,8 @@ func TestStoreModelOverlay_BumpsRevision(t *testing.T) {
 
 func TestHandleModelOverlayAction_HideThenRestore(t *testing.T) {
 	defer setModelOverlayForTest(modelOverlay{})()
+	oldFeatures := featureRuntime.Load()
+	t.Cleanup(func() { featureRuntime.Store(oldFeatures) })
 	res := handleModelOverlayAction(managementRequestWithBody(`{"action":"hide","id":"m1"}`))
 	if res["success"] != true {
 		t.Fatalf("hide failed: %v", res)
@@ -149,6 +151,40 @@ func TestHandleModelOverlayAction_HideThenRestore(t *testing.T) {
 	loaded, _ = loadedModelOverlay()
 	if len(loaded.Hide) != 0 {
 		t.Fatalf("restore left hide entries: %v", loaded.Hide)
+	}
+	if got := currentFeatureRuntime().hiddenModels; len(got) != 0 {
+		t.Fatalf("restore left hidden_models: %v", got)
+	}
+	if res["persistent"] != true {
+		t.Fatalf("restore persistence = %v, want true", res["persistent"])
+	}
+}
+
+func TestHandleModelOverlayAction_HideUpdatesPersistentHiddenModels(t *testing.T) {
+	defer setModelOverlayForTest(modelOverlay{})()
+	oldFeatures := featureRuntime.Load()
+	t.Cleanup(func() { featureRuntime.Store(oldFeatures) })
+
+	res := handleModelOverlayAction(managementRequestWithBody(`{"action":"hide","id":"m-persist"}`))
+	if res["success"] != true {
+		t.Fatalf("hide failed: %v", res)
+	}
+	if got := currentFeatureRuntime().hiddenModels; !reflect.DeepEqual(got, []string{"m-persist"}) {
+		t.Fatalf("hidden_models = %v, want [m-persist]", got)
+	}
+	if res["persistent"] != true {
+		t.Fatalf("hide persistence = %v, want true", res["persistent"])
+	}
+}
+
+func TestHandleModelOverlayAction_MoveIsMemoryOnly(t *testing.T) {
+	defer setModelOverlayForTest(modelOverlay{Order: []string{"a", "b"}})()
+	res := handleModelOverlayAction(managementRequestWithBody(`{"action":"move","id":"b","offset":-1}`))
+	if res["success"] != true {
+		t.Fatalf("move failed: %v", res)
+	}
+	if res["persistent"] != false {
+		t.Fatalf("move persistence = %v, want false", res["persistent"])
 	}
 }
 

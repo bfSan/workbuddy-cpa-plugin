@@ -669,6 +669,7 @@ func (r *modelRuntime) commitFeatureRuntime(next *featureRuntimeConfig) uint64 {
 	snapshot := *next
 	snapshot.desensitizeTerms = append([]string(nil), next.desensitizeTerms...)
 	snapshot.configuredModels = append([]string(nil), next.configuredModels...)
+	snapshot.hiddenModels = append([]string(nil), next.hiddenModels...)
 	if next.configuredCredits != nil {
 		snapshot.configuredCredits = make(map[string]string, len(next.configuredCredits))
 		for id, value := range next.configuredCredits {
@@ -678,6 +679,9 @@ func (r *modelRuntime) commitFeatureRuntime(next *featureRuntimeConfig) uint64 {
 	// Config is the persistent source for pinned multipliers; apply it on every
 	// commit so a reload is authoritative.
 	syncConfiguredCredits(snapshot.configuredCredits)
+	// hidden_models is also config-backed. Restore the persistent hide list
+	// while preserving the process-local order/add overlays.
+	syncOverlayHiddenModels(snapshot.hiddenModels)
 	r.configCommitMu.Lock()
 	featureRuntime.Store(&snapshot)
 	generation := r.configGeneration.Add(1)

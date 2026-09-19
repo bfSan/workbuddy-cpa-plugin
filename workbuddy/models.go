@@ -1,6 +1,7 @@
 // models.go implements the ModelProvider capability: static/per-auth model
 // lists, alias reverse resolution (client-facing alias -> upstream model id),
-// and the host-config oauth-excluded-models filter.
+// the plugin-owned hidden-model filter, and the host-config
+// oauth-excluded-models filter.
 package main
 
 import (
@@ -174,6 +175,7 @@ func handleModelStatic(raw []byte) ([]byte, error) {
 	}
 	cacheModelAliases(req.Host)
 	models := wbModels()
+	models = filterHiddenModels(models)
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }
@@ -191,7 +193,41 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 		// hidden entries remain restorable. Apply the operator overlay only to
 		// this response copy, after cloning shared state.
 		models = applyModelOverlay(cloneModelInfos(snapshot.Models), loadedModelOverlayForRead())
+		models = filterHiddenModels(models)
 		models = filterExcludedModels(models, req.Host)
 	}
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
+}
+
+// filterHiddenModels applies the persistent plugin-owned hidden_models list.
+// CPA does not have a plugin-triggered "refresh registry" RPC, so this filter
+// must be applied to model.static/model.for_auth responses; a plugin config
+// reload makes CPA re-register those responses.
+func filterHiddenModels(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
+	hidden := currentHiddenModels()
+	if len(hidden) == 0 || len(models) == 0 {
+		return models
+	}
+	out := make([]pluginapi.ModelInfo, 0, len(models))
+	for _, model := range models {
+		if _, skip := hidden[strings.TrimSpace(model.ID)]; skip {
+			continue
+		}
+		out = append(out, model)
+	}
+	return out
+}
+
+func currentHiddenModels() map[string]struct{} {
+	cfg := currentFeatureRuntime()
+	if cfg == nil || len(cfg.hiddenModels) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(cfg.hiddenModels))
+	for _, id := range cfg.hiddenModels {
+		if id = strings.TrimSpace(id); id != "" {
+			out[id] = struct{}{}
+		}
+	}
+	return out
 }

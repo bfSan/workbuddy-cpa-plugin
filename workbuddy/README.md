@@ -16,7 +16,7 @@ built-in management dashboard.
   authenticated account's model entitlements. An optional authoritative YAML
   list can replace WorkBuddy discovery. Both modes enrich missing metadata from
   models.dev. Host-side `oauth-model-alias` / `oauth-excluded-models` config
-  still applies.
+  still applies; plugin-owned `hidden_models` is a separate persistent deny-list.
 - **Executor** — OpenAI-compatible chat completions, both streaming (real SSE
   via `host.stream.emit`) and non-streaming (SSE folded into a single
   completion). `tool_choice` normalization, Claude Code template sanitization,
@@ -150,9 +150,10 @@ plugins:
       management_key: ""
 ```
 
-Model aliases and exclusions are handled natively by CPA's
-`oauth-model-alias` and `oauth-excluded-models` config — no plugin-side
-duplication needed.
+Model aliases and host-level exclusions can still use CPA's
+`oauth-model-alias` and `oauth-excluded-models` config. The panel's hide action
+instead persists `plugins.configs.workbuddy.hidden_models`, and the plugin
+filters those IDs before they reach CPA's model registry.
 
 When `proxy-url` is set, chat, billing/check-in/trial, token refresh,
 `executor.http_request`, usage forwarding, OAuth state/token/account calls,
@@ -191,10 +192,10 @@ authenticated bootstrap boundary:
    an immutable per-account catalog is published.
 
 Beyond the YAML `models` full override, the plugin keeps a curation overlay
-(`hide` / `order` / `add`) applied on top of whatever the base catalog is. See
-the management API section for the routes and the panel's model block. Both the
-overlay and the per-model cooldown table are process-local: they survive
-config reloads but not a CPA restart.
+(`hide` / `order` / `add`) applied on top of whatever the base catalog is.
+`hide` persists in `hidden_models`; `order`, `add`, and the per-model cooldown
+table are process-local and survive config reloads but not a CPA restart. See
+the management API section for the routes and the panel's model block.
 
 ## Per-model cooldown
 

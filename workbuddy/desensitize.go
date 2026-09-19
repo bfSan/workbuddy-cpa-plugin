@@ -50,6 +50,7 @@ type featureRuntimeConfig struct {
 	enterpriseCredits  bool
 	configuredModels   []string
 	configuredCredits  map[string]string
+	hiddenModels       []string
 }
 
 var featureRuntime atomic.Pointer[featureRuntimeConfig]
@@ -70,6 +71,7 @@ func currentFeatureRuntime() *featureRuntimeConfig {
 	snapshot := *cfg
 	snapshot.desensitizeTerms = append([]string(nil), cfg.desensitizeTerms...)
 	snapshot.configuredModels = append([]string(nil), cfg.configuredModels...)
+	snapshot.hiddenModels = append([]string(nil), cfg.hiddenModels...)
 	if cfg.configuredCredits != nil {
 		snapshot.configuredCredits = make(map[string]string, len(cfg.configuredCredits))
 		for id, value := range cfg.configuredCredits {
@@ -88,6 +90,10 @@ type featureConfigYAML struct {
 	// ModelCredits pins a multiplier per model ID, overriding whatever the
 	// upstream reported. Empty value clears the override.
 	ModelCredits yaml.Node `yaml:"model_credits"`
+	// HiddenModels is the persistent plugin-owned deny-list. It is applied
+	// before model responses reach CPA, so the host global registry never sees
+	// hidden IDs.
+	HiddenModels yaml.Node `yaml:"hidden_models"`
 }
 
 func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
@@ -125,6 +131,10 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	hiddenModels, err := normalizedConfiguredModels(doc.HiddenModels)
+	if err != nil {
+		return nil, err
+	}
 	return &featureRuntimeConfig{
 		desensitizeEnabled: doc.Desensitize != nil && *doc.Desensitize,
 		desensitizeTerms:   terms,
@@ -134,6 +144,7 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 		enterpriseCredits:  doc.EnterpriseCredits != nil && *doc.EnterpriseCredits,
 		configuredModels:   models,
 		configuredCredits:  credits,
+		hiddenModels:       hiddenModels,
 	}, nil
 }
 

@@ -333,3 +333,19 @@ func setPresetTargets(targets map[string][]string) {
 	}
 	presetTargets = next
 }
+
+// presetTargetFor returns the concrete model a preset alias is forwarded to,
+// or the ID itself when no mapping is configured. Unlike upgradeModelID it does
+// not require the target to be present in a catalog: callers that have no
+// catalog in hand (the executor) rely on downstream validation instead.
+func presetTargetFor(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	targets := loadedPresetTargets()[strings.ToLower(id)]
+	if len(targets) == 0 {
+		return id
+	}
+	return targets[0]
+}

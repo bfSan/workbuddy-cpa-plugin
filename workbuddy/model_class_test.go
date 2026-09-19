@@ -179,3 +179,36 @@ func TestCompletePresetModels_NoopWhenEntitled(t *testing.T) {
 		t.Fatalf("entitled concrete model should make completion a no-op, got %#v", got)
 	}
 }
+
+// A client may still ask for the preset alias even though the catalog serves
+// the concrete model. Forwarding must follow the same mapping rather than
+// rejecting an ID the catalog used to advertise.
+func TestResolveUpstreamModel_FollowsPresetAlias(t *testing.T) {
+	restore := setPresetTargetsForTest(map[string][]string{"preset-a": {"concrete-a"}})
+	defer restore()
+	if got := resolveUpstreamModel("preset-a", nil); got != "concrete-a" {
+		t.Fatalf("got %q, want concrete-a", got)
+	}
+	// A host-supplied oauth-model-alias still wins over the preset mapping.
+	defer setModelAliasForTest(map[string]string{"preset-a": "host-target"})()
+	if got := resolveUpstreamModel("preset-a", nil); got != "host-target" {
+		t.Fatalf("host alias should win, got %q", got)
+	}
+	// Unmapped models are untouched.
+	if got := resolveUpstreamModel("serve-chat", nil); got != "serve-chat" {
+		t.Fatalf("got %q, want serve-chat", got)
+	}
+}
+
+// setModelAliasForTest installs host-style aliases and returns a restore func.
+func setModelAliasForTest(byAlias map[string]string) func() {
+	modelAliasCache.Lock()
+	prev := modelAliasCache.byAlias
+	modelAliasCache.byAlias = byAlias
+	modelAliasCache.Unlock()
+	return func() {
+		modelAliasCache.Lock()
+		modelAliasCache.byAlias = prev
+		modelAliasCache.Unlock()
+	}
+}

@@ -222,3 +222,37 @@ func setModelAliasForTest(byAlias map[string]string) func() {
 		modelAliasCache.Unlock()
 	}
 }
+
+// The CN cli agent is entitled to "auto" while upstream serves that model as
+// "default". Only one spelling used to be routable, so both fold to one ID.
+func TestCanonicalModelID_FoldsAutoOntoDefault(t *testing.T) {
+	for _, in := range []string{"auto", "Auto", "  AUTO "} {
+		if got := canonicalModelID(in); got != "default" {
+			t.Fatalf("canonicalModelID(%q) = %q, want default", in, got)
+		}
+	}
+	if got := canonicalModelID("hy3"); got != "hy3" {
+		t.Fatalf("a normal ID must pass through, got %q", got)
+	}
+	if got := canonicalModelID(""); got != "" {
+		t.Fatalf("blank must stay blank, got %q", got)
+	}
+}
+
+// The entitlement "auto" must land in the catalog as the ID the gateway serves.
+func TestParseWorkBuddyV3ConfigCanonicalizesAuto(t *testing.T) {
+	raw := []byte(`{"code":0,"data":{
+	  "agents":[{"name":"cli","models":["auto","serve-chat"]}],
+	  "models":[{"id":"default","name":"Auto","credits":"x0.50"},{"id":"serve-chat"}]}}`)
+	got, err := parseWorkBuddyV3Config(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "default" || got[1].ID != "serve-chat" {
+		t.Fatalf("auto should fold onto default, got %#v", got)
+	}
+	// The merged rich metadata still lands on the canonical ID.
+	if got[0].Name != "Auto" || got[0].Credits != "x0.50" {
+		t.Fatalf("rich metadata not merged onto the canonical ID: %#v", got[0])
+	}
+}

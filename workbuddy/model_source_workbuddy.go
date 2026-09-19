@@ -165,7 +165,7 @@ func parseWorkBuddyV3Config(raw []byte) ([]modelFacts, error) {
 	entitled := make(map[string]struct{}, len(modelIDs))
 	models := make([]modelFacts, 0, len(modelIDs)+len(response.Data.Models))
 	for _, rawID := range modelIDs {
-		id := strings.TrimSpace(rawID)
+		id := canonicalModelID(strings.TrimSpace(rawID))
 		// A duplicate entitlement ID is still a schema problem: validateModelFacts
 		// would reject it, and serving a quietly de-duplicated list hides that.
 		if _, dup := entitled[id]; dup {
@@ -175,7 +175,7 @@ func parseWorkBuddyV3Config(raw []byte) ([]modelFacts, error) {
 		models = append(models, modelFacts{ID: id})
 	}
 	for _, entry := range response.Data.Models {
-		id := strings.TrimSpace(entry.ID)
+		id := canonicalModelID(strings.TrimSpace(entry.ID))
 		if id == "" || entry.Disabled {
 			continue
 		}

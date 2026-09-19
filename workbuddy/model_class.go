@@ -43,6 +43,12 @@ const (
 // Internal helpers the gateway advertises but that never serve chat: the lite
 // entry backs title generation and compaction, and default/primary are desktop
 // presets the chat endpoint does not resolve.
+//
+// "default" is excluded from that list on purpose. The CN cli agent's
+// entitlement carries "auto" as its entry for the default model, and the
+// plugin's own static list names it "auto"; upstream resolves it as "default".
+// Both spellings therefore have to reach the gateway rather than be filtered
+// as a desktop preset.
 var nonChatModelIDs = map[string]struct{}{
 	"lite":          {},
 	"default-model": {},
@@ -55,8 +61,12 @@ var nonChatModelIDs = map[string]struct{}{
 //
 // The alias set is shape-matched rather than enumerated so a new preset from
 // upstream is recognised without a code change.
+// presetSuffixes are the shapes desktop preset aliases take.
 var presetSuffixes = []string{"-model"}
 
+// isPresetModelID reports whether an ID is a desktop preset alias. Shape
+// matching rather than an ID list, so a new preset from upstream is recognised
+// without a code change.
 func isPresetModelID(id string) bool {
 	id = strings.ToLower(strings.TrimSpace(id))
 	if id == "" {
@@ -338,4 +348,14 @@ func presetTargetFor(id string) string {
 		return id
 	}
 	return targets[0]
+}
+
+// canonicalModelID folds the desktop's "auto" entry onto the upstream ID the
+// gateway resolves it to. The CN cli agent is entitled to "auto" while upstream
+// serves that model as "default", so only one spelling was routable.
+func canonicalModelID(id string) string {
+	if strings.EqualFold(strings.TrimSpace(id), "auto") {
+		return "default"
+	}
+	return id
 }

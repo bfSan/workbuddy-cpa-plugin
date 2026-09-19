@@ -537,14 +537,16 @@ test("card exposes the host auth id used by the clear action", () => {
     cooling: [{ model: "model-1", seconds: 90 }],
   });
   assert.match(fallback, /data-auth-id="9"/);
-});
-// The panel's model state is a module-local `let`, so tests drive the real
+});// The panel's model state is a module-local `let`, so tests drive the real
 // loadModels() path with a stubbed api() rather than assigning it directly.
 const CREDITS_MODELS = [
-  { id: "glm-5.2", name: "GLM", credits: { value: "x0.79 credits", rate: 0.79, source: "upstream" } },
-  { id: "hy3", name: "HY3", credits: { value: "x0.00", rate: 0, source: "upstream" } },
-  { id: "deep-model", name: "Deep", credits: { value: "x1.20", rate: 1.2, source: "override" } },
-  { id: "mystery", name: "?", credits: { value: "", rate: 0, source: "" } },
+  { id: "glm-5.2", chatUsable: true, name: "GLM", kind: "chat", kindLabel: "chat", credits: { value: "x0.79 credits", rate: 0.79, source: "upstream" } },
+  { id: "hy3", chatUsable: true, name: "HY3", kind: "chat", kindLabel: "chat", credits: { value: "x0.00", rate: 0, source: "upstream" } },
+  { id: "deep-model", chatUsable: true, name: "Deep", kind: "chat", kindLabel: "chat", credits: { value: "x1.20", rate: 1.2, source: "override" } },
+  { id: "mystery", chatUsable: true, name: "?", kind: "chat", kindLabel: "chat", credits: { value: "", rate: 0, source: "" } },
+  { id: "hunyuan-image-alpha", name: "Img", kind: "image", kindLabel: "图像", chatUsable: false, credits: { value: "", rate: 0, source: "" } },
+  { id: "completion-gf", name: "Comp", kind: "completion", kindLabel: "文本补全", chatUsable: false, credits: { value: "", rate: 0, source: "" } },
+  { id: "default-1.1", name: "Old", kind: "unknown", kindLabel: "不可用", chatUsable: false, credits: { value: "", rate: 0, source: "" } },
 ];
 
 function loadPanelWithCredits() {
@@ -553,71 +555,109 @@ function loadPanelWithCredits() {
   return panel;
 }
 
-test("renderModels shows the credit multiplier with its source", async () => {
+test("renderModels shows the multiplier inline with its source", async () => {
   const { context, elements } = loadPanelWithCredits();
   await context.loadModels(false);
   const html = elements.get("modelList").innerHTML;
+  // Inline inputs, one per row — no separate "倍率" button to click first.
+  assert.equal((html.match(/data-credit-model="/g) || []).length, CREDITS_MODELS.length);
+  assert.doesNotMatch(html, /openCreditsEditor/);
   assert.match(html, /0\.79x/);
   assert.match(html, /1\.20x/);
   // x0.00 is a promotion, not an unknown rate: it must read as free.
   assert.match(html, /免费/);
-  // A model with no multiplier gets no badge at all rather than a bare "0x".
-  assert.doesNotMatch(html, /mystery[\s\S]{0,160}?badge/);
-  // Every row gets a way to pin the multiplier.
-  assert.equal((html.match(/openCreditsEditor\(/g) || []).length, 4);
+  // A pinned value is marked so it is distinguishable from an upstream one.
+  assert.match(html, /cd-badge pinned/);
 });
 
-test("openCreditsEditor seeds the input and saveModelCredits posts it", async () => {
+test("renderModels labels non-chat entries instead of dropping them", async () => {
   const { context, elements } = loadPanelWithCredits();
   await context.loadModels(false);
-  context.openCreditsEditor("hy3");
-  const row = elements.get("creditsEditRow");
-  assert.equal(row.style.display, "flex");
-  assert.equal(elements.get("creditsEditTitle").textContent, "积分倍率 · hy3");
-  assert.match(elements.get("creditsEditHint").textContent, /上游同步/);
+  const html = elements.get("modelList").innerHTML;
+  // C-scheme: list everything, but say what each thing is.
+  assert.match(html, /hunyuan-image-alpha/);
+  assert.match(html, /completion-gf/);
+  assert.match(html, /default-1\.1/);
+  assert.match(html, /kind-image/);
+  assert.match(html, /kind-completion/);
+  assert.match(html, /kind-unknown/);
+  assert.match(html, /图像/);
+  assert.match(html, /不可用/);
+  // A plain chat model carries no shape badge.
+  assert.doesNotMatch(html, /glm-5\.2[\s\S]{0,120}?kind-/);
+});
 
-  context.openCreditsEditor("deep-model");
-  // A pinned value seeds the input so editing starts from what is in effect.
-  assert.equal(elements.get("creditsEditInput").value, "x1.20");
-  assert.match(elements.get("creditsEditHint").textContent, /本地固定/);
-
-  let path = "", body = "";
+test("saveModelCredit posts the inline edit and skips no-op writes", async () => {
+  const { context } = loadPanelWithCredits();
+  await context.loadModels(false);
   const realApi = context.api;
+  let path = "", body = null, calls = 0;
   context.api = async (p, o) => {
-    if (p === "/models/credits") { path = p; body = JSON.parse(o.body); return { success: true }; }
+    if (p === "/models/credits") { path = p; body = JSON.parse(o.body); calls += 1; return { success: true }; }
     return realApi(p, o);
   };
-  let toastDetail = "";
-  context.toast = (_t, _k, detail) => { toastDetail = detail; };
-  elements.get("creditsEditInput").value = "x0.33";
-  await context.saveModelCredits();
+  context.toast = () => {};
+
+  await context.saveModelCredit("glm-5.2", "x0.33", { disabled: false });
   assert.equal(path, "/models/credits");
-  assert.deepEqual(body, { model: "deep-model", credits: "x0.33" });
-  assert.equal(row.style.display, "none");
-  assert.match(toastDetail, /x0\.33/);
+  assert.deepEqual(body, { model: "glm-5.2", credits: "x0.33" });
+  assert.equal(calls, 1);
+
+  // Writing the value already in effect must not hit the API.
+  await context.saveModelCredit("deep-model", "x1.20", null);
+  assert.equal(calls, 1);
 });
 
-test("saveModelCredits clears the pin when the input is empty", async () => {
-  const { context, elements } = loadPanelWithCredits();
+test("saveModelCredit clears the pin when the value is emptied", async () => {
+  const { context } = loadPanelWithCredits();
   await context.loadModels(false);
-  context.openCreditsEditor("deep-model");
-  let body = "";
   const realApi = context.api;
+  let body = null;
   context.api = async (p, o) => {
     if (p === "/models/credits") { body = JSON.parse(o.body); return { success: true }; }
     return realApi(p, o);
   };
   context.toast = () => {};
-  elements.get("creditsEditInput").value = "   ";
-  await context.saveModelCredits();
+  await context.saveModelCredit("deep-model", "   ", null);
   assert.deepEqual(body, { model: "deep-model", credits: "" });
 });
 
-test("saveModelCredits with no model open is a no-op", async () => {
+test("saveModelCredit with a blank model is a no-op", async () => {
   const { context } = loadPanelWithCredits();
+  await context.loadModels(false);
   let calls = 0;
   context.api = async () => { calls += 1; return { models: [], source: "none" }; };
-  context.closeCreditsEditor();
-  await context.saveModelCredits();
+  await context.saveModelCredit("", "x1", null);
+  await context.saveModelCredit("   ", "x1", null);
   assert.equal(calls, 0);
+});
+
+// The catalog is filtered by shape, so the hint must say how many listed
+// entries are not chat-usable: otherwise the count looks like a bug.
+test("loadModels reports how many listed models are not chat-usable", async () => {
+  const { context, elements } = loadPanelWithCredits();
+  await context.loadModels(false);
+  const hint = elements.get("modelHint").textContent;
+  assert.match(hint, /共 7 个模型/);
+  // image + completion + unknown = 3 non-chat entries in the fixture.
+  assert.match(hint, /3 个非聊天模型/);
+});
+
+// A preset is a desktop alias with its own credits, so it is listed as itself
+// and flagged — not rewritten into some concrete model.
+test("renderModels flags preset aliases instead of renaming them", async () => {
+  const panel = loadPanel();
+  panel.context.api = async () => ({
+    models: [
+      { id: "preset-a", name: "A", kind: "chat", kindLabel: "chat", preset: true, credits: {} },
+      { id: "serve-chat", name: "B", kind: "chat", kindLabel: "chat", preset: false, credits: {} },
+    ],
+    source: "fresh",
+  });
+  await panel.context.loadModels(false);
+  const html = panel.elements.get("modelList").innerHTML;
+  assert.match(html, /preset-a/);
+  assert.match(html, /badge preset/);
+  // A concrete model carries no preset badge.
+  assert.equal((html.match(/badge preset/g) || []).length, 1);
 });

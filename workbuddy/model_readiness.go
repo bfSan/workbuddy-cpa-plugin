@@ -330,11 +330,7 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 			return r.finishAuthCall(slot, key, authGeneration, call, snapshot)
 		}
 
-		models := make([]pluginapi.ModelInfo, len(configuredModels))
-		for i, id := range configuredModels {
-			serving := modelFacts{ID: id}
-			models[i] = modelInfoFromSources(serving, matchModelsDevRecord(id, metadata.cache.Records))
-		}
+		models := discoveredModelInfos(configuredModelFacts(configuredModels), metadata.cache.Records)
 		snapshot.Models = applyModelOverlay(models, loadedModelOverlayForRead())
 		if metadata.source == modelSourceFresh {
 			snapshot.State = modelReady
@@ -416,10 +412,7 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 		return r.finishAuthCall(slot, key, authGeneration, call, snapshot)
 	}
 
-	models := make([]pluginapi.ModelInfo, len(modelSelection.cache.Models))
-	for i, model := range modelSelection.cache.Models {
-		models[i] = modelInfoFromSources(model, matchModelsDevRecord(model.ID, metadata.cache.Records))
-	}
+	models := discoveredModelInfos(modelSelection.cache.Models, metadata.cache.Records)
 	snapshot.Models = applyModelOverlay(models, loadedModelOverlayForRead())
 	if modelSelection.source == modelSourceFresh && metadata.source == modelSourceFresh {
 		snapshot.State = modelReady
@@ -680,6 +673,9 @@ func (r *modelRuntime) commitFeatureRuntime(next *featureRuntimeConfig) uint64 {
 	// Config is the persistent source for pinned multipliers; apply it on every
 	// commit so a reload is authoritative.
 	syncConfiguredCredits(snapshot.configuredCredits)
+	// Preset aliases resolve through config, so publish the mapping wherever
+	// the catalog is assembled rather than keeping a second copy.
+	setPresetTargets(snapshot.presetTargets)
 	r.configCommitMu.Lock()
 	featureRuntime.Store(&snapshot)
 	generation := r.configGeneration.Add(1)

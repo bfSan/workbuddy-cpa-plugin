@@ -185,6 +185,8 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/models/credits", Description: "Pin or clear one model's credit multiplier (body: {model, credits})."},
 			{Method: http.MethodGet, Path: base + "/cooldowns", Description: "List active per-(account, model) throttling entries."},
 			{Method: http.MethodPost, Path: base + "/cooldowns/clear", Description: "Clear throttling for one account (auth_id) or one pair (auth_id + model)."},
+			{Method: http.MethodPost, Path: base + "/oauth/start", Description: "Start an OAuth login flow and return the URL to open."},
+			{Method: http.MethodPost, Path: base + "/oauth/poll", Description: "Poll one OAuth login flow (body or query: state)."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "WorkBuddy", Description: "WorkBuddy dashboard: credits, check-in, plan, import."},
@@ -273,6 +275,10 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCooldownList(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/cooldowns/clear":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCooldownClear(req.ManagementRequest)))
+	case req.Method == http.MethodPost && path == base+"/oauth/start":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleOAuthStart()))
+	case req.Method == http.MethodPost && path == base+"/oauth/poll":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleOAuthPoll(req.ManagementRequest)))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }

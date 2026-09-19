@@ -170,6 +170,95 @@ func TestModelForAuthReturnsResponseLocalReadyAndStaleModels(t *testing.T) {
 	}
 }
 
+func TestModelOverlayHidesServingModelsButKeepsAdminCatalogRestorable(t *testing.T) {
+	const (
+		authID     = "auth-overlay"
+		callbackID = "callback-overlay"
+	)
+	sa := syntheticStoredAuth(t, workBuddyRealmCN)
+	runtime := newModelRuntime(newModelStore(t.TempDir()), func(req *http.Request, gotCallbackID string) (*hostHTTPResponse, error) {
+		if gotCallbackID != callbackID {
+			t.Fatalf("callback ID = %q, want %q", gotCallbackID, callbackID)
+		}
+		switch req.URL.Host {
+		case "copilot.tencent.com":
+			return &hostHTTPResponse{
+				StatusCode: http.StatusOK,
+				Headers:    make(http.Header),
+				Body:       []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["overlay-visible","overlay-hidden"]}]}}`),
+			}, nil
+		case "models.dev":
+			return &hostHTTPResponse{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"ETag": []string{`"overlay-etag"`}},
+				Body: []byte(`{"vendor/overlay-visible":{"id":"overlay-visible","name":"Visible"},` +
+					`"vendor/overlay-hidden":{"id":"overlay-hidden","name":"Hidden"}}`),
+			}, nil
+		default:
+			t.Fatalf("unexpected model request %s", req.URL)
+			return nil, nil
+		}
+	})
+	oldRuntime := activeModelRuntime.Swap(runtime)
+	oldList := panelHostAuthList
+	panelHostAuthList = func() ([]pluginapi.HostAuthFileEntry, error) {
+		return []pluginapi.HostAuthFileEntry{{ID: authID, AuthIndex: "acct-overlay"}}, nil
+	}
+	defer func() {
+		activeModelRuntime.Store(oldRuntime)
+		panelHostAuthList = oldList
+	}()
+	defer setModelOverlayForTest(modelOverlay{Hide: []string{"overlay-hidden"}})()
+
+	raw, err := handleModelForAuth(mustJSON(authModelRequestWire{
+		AuthModelRequest: pluginapi.AuthModelRequest{AuthID: authID, StorageJSON: mustJSON(sa)},
+		HostCallbackID:   callbackID,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := decodeModelResponse(t, raw)
+	if len(served.Models) != 1 || served.Models[0].ID != "overlay-visible" {
+		t.Fatalf("serving catalog = %#v, want only overlay-visible", served.Models)
+	}
+
+	snapshot := runtime.snapshotForAuthID(authID)
+	if len(snapshot.Models) != 2 {
+		t.Fatalf("snapshot dropped hidden model: %#v", snapshot.Models)
+	}
+
+	admin := handleModelListQuery()
+	items, ok := admin["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("admin models type = %T", admin["models"])
+	}
+	hiddenFound := false
+	for _, item := range items {
+		if item["id"] == "overlay-hidden" {
+			hiddenFound = item["hidden"] == true
+			break
+		}
+	}
+	if !hiddenFound {
+		t.Fatalf("admin catalog did not expose the hidden model: %#v", items)
+	}
+
+	if res := handleModelOverlayAction(managementRequestWithBody(`{"action":"restore","id":"overlay-hidden"}`)); res["success"] != true {
+		t.Fatalf("restore failed: %#v", res)
+	}
+	raw, err = handleModelForAuth(mustJSON(authModelRequestWire{
+		AuthModelRequest: pluginapi.AuthModelRequest{AuthID: authID, StorageJSON: mustJSON(sa)},
+		HostCallbackID:   callbackID,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	served = decodeModelResponse(t, raw)
+	if len(served.Models) != 2 {
+		t.Fatalf("restored serving catalog = %#v, want both models", served.Models)
+	}
+}
+
 func TestModelForAuthFailedAndNotStartedReturnEmptySuccess(t *testing.T) {
 	assertEmpty := func(t *testing.T, raw []byte) {
 		t.Helper()

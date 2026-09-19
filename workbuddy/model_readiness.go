@@ -331,7 +331,10 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 		}
 
 		models := discoveredModelInfos(configuredModelFacts(configuredModels), metadata.cache.Records)
-		snapshot.Models = applyModelOverlay(models, loadedModelOverlayForRead())
+		// Snapshots hold the complete base catalog. Serving and admin views
+		// apply the overlay at read time so a hidden model can always be
+		// restored, even after this snapshot is refreshed.
+		snapshot.Models = models
 		if metadata.source == modelSourceFresh {
 			snapshot.State = modelReady
 			snapshot.ErrorCode = modelErrorNone
@@ -413,7 +416,9 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	}
 
 	models := discoveredModelInfos(modelSelection.cache.Models, metadata.cache.Records)
-	snapshot.Models = applyModelOverlay(models, loadedModelOverlayForRead())
+	// Keep the full base catalog in the shared snapshot; handleModelForAuth
+	// applies hide/order/add to its response copy.
+	snapshot.Models = models
 	if modelSelection.source == modelSourceFresh && metadata.source == modelSourceFresh {
 		snapshot.State = modelReady
 		snapshot.ErrorCode = modelErrorNone

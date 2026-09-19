@@ -555,19 +555,32 @@ function loadPanelWithCredits() {
   return panel;
 }
 
-test("renderModels shows the multiplier inline with its source", async () => {
+test("card does not render or highlight the panel selection state", () => {
+  const { context } = loadPanel();
+  const html = context.card({
+    auth_index: "3",
+    auth_id: "wb-a",
+    name: "acct",
+    selected: true,
+  });
+  assert.doesNotMatch(html, /使用中/);
+  assert.doesNotMatch(html, /data-action="select"/);
+  assert.doesNotMatch(html, />选用</);
+  assert.doesNotMatch(html, /class="card selected"/);
+});
+
+test("renderModels shows the multiplier as read-only text", async () => {
   const { context, elements } = loadPanelWithCredits();
   await context.loadModels(false);
   const html = elements.get("modelList").innerHTML;
-  // Inline inputs, one per row — no separate "倍率" button to click first.
-  assert.equal((html.match(/data-credit-model="/g) || []).length, CREDITS_MODELS.length);
-  assert.doesNotMatch(html, /openCreditsEditor/);
+  // No editable multiplier input remains; the value is display-only.
+  assert.doesNotMatch(html, /data-credit-model/);
+  assert.doesNotMatch(html, /saveModelCredit/);
+  assert.equal((html.match(/class="model-credit"/g) || []).length, CREDITS_MODELS.length);
   assert.match(html, /0\.79x/);
   assert.match(html, /1\.20x/);
   // x0.00 is a promotion, not an unknown rate: it must read as free.
   assert.match(html, /免费/);
-  // A pinned value is marked so it is distinguishable from an upstream one.
-  assert.match(html, /cd-badge pinned/);
 });
 
 test("renderModels labels non-chat entries instead of dropping them", async () => {
@@ -585,51 +598,6 @@ test("renderModels labels non-chat entries instead of dropping them", async () =
   assert.match(html, /不可用/);
   // A plain chat model carries no shape badge.
   assert.doesNotMatch(html, /glm-5\.2[\s\S]{0,120}?kind-/);
-});
-
-test("saveModelCredit posts the inline edit and skips no-op writes", async () => {
-  const { context } = loadPanelWithCredits();
-  await context.loadModels(false);
-  const realApi = context.api;
-  let path = "", body = null, calls = 0;
-  context.api = async (p, o) => {
-    if (p === "/models/credits") { path = p; body = JSON.parse(o.body); calls += 1; return { success: true }; }
-    return realApi(p, o);
-  };
-  context.toast = () => {};
-
-  await context.saveModelCredit("glm-5.2", "x0.33", { disabled: false });
-  assert.equal(path, "/models/credits");
-  assert.deepEqual(body, { model: "glm-5.2", credits: "x0.33" });
-  assert.equal(calls, 1);
-
-  // Writing the value already in effect must not hit the API.
-  await context.saveModelCredit("deep-model", "x1.20", null);
-  assert.equal(calls, 1);
-});
-
-test("saveModelCredit clears the pin when the value is emptied", async () => {
-  const { context } = loadPanelWithCredits();
-  await context.loadModels(false);
-  const realApi = context.api;
-  let body = null;
-  context.api = async (p, o) => {
-    if (p === "/models/credits") { body = JSON.parse(o.body); return { success: true }; }
-    return realApi(p, o);
-  };
-  context.toast = () => {};
-  await context.saveModelCredit("deep-model", "   ", null);
-  assert.deepEqual(body, { model: "deep-model", credits: "" });
-});
-
-test("saveModelCredit with a blank model is a no-op", async () => {
-  const { context } = loadPanelWithCredits();
-  await context.loadModels(false);
-  let calls = 0;
-  context.api = async () => { calls += 1; return { models: [], source: "none" }; };
-  await context.saveModelCredit("", "x1", null);
-  await context.saveModelCredit("   ", "x1", null);
-  assert.equal(calls, 0);
 });
 
 // The catalog is filtered by shape, so the hint must say how many listed
@@ -660,4 +628,27 @@ test("renderModels flags preset aliases instead of renaming them", async () => {
   assert.match(html, /badge preset/);
   // A concrete model carries no preset badge.
   assert.equal((html.match(/badge preset/g) || []).length, 1);
+});
+
+test("renderModels keeps hidden models visible and offers restore", async () => {
+  const panel = loadPanel();
+  panel.context.api = async () => ({
+    models: [
+      { id: "visible", name: "Visible", kind: "chat", kindLabel: "chat", hidden: false, credits: {} },
+      { id: "hidden-one", name: "Hidden", kind: "chat", kindLabel: "chat", hidden: true, credits: {} },
+    ],
+    source: "fresh",
+  });
+  await panel.context.loadModels(false);
+  const html = panel.elements.get("modelList").innerHTML;
+  assert.match(html, /hidden-one/);
+  assert.match(html, /已隐藏/);
+  assert.match(html, /restoreModel\('hidden-one'\)/);
+  assert.doesNotMatch(html, /moveModel\('hidden-one'/);
+
+  let path = "", body = null;
+  panel.context.api = async (p, o) => { path = p; body = JSON.parse(o.body); return { success: true }; };
+  await panel.context.restoreModel("hidden-one");
+  assert.equal(path, "/models/action");
+  assert.deepEqual(body, { action: "restore", id: "hidden-one" });
 });

@@ -59,9 +59,8 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .model-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;min-width:0;flex:1 1 auto;overflow-wrap:anywhere}
 .model-name{font-size:12px;flex:0 0 auto;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-/* 倍率内联编辑：固定宽度，避免输入内容长短把整行挤动 */
-.model-credit{flex:0 0 92px;width:92px;padding:3px 8px;font-size:12px;font-variant-numeric:tabular-nums}
-.model-credit:disabled{opacity:.5}
+/* 倍率只读展示：固定宽度，避免数值长短把整行挤动 */
+.model-credit{flex:0 0 92px;width:92px;padding:3px 8px;font-size:12px;text-align:center;font-variant-numeric:tabular-nums;color:var(--mut)}
 .cd-badge{flex:0 0 auto;min-width:52px;text-align:center;font-size:11px;font-weight:600;padding:3px 8px;border-radius:99px;
   background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border);font-variant-numeric:tabular-nums}
 .cd-badge.pinned{background:var(--acc-ring);color:var(--acc);border-color:var(--acc)}
@@ -78,7 +77,6 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .model-actions .ftag[disabled]{opacity:.4;cursor:default}
 .card,.summary{background:var(--card);border:1px solid var(--border);border-radius:12px}
 .card{padding:16px}
-.card.selected{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc-ring)}
 .card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center}
 .uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
 .badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
@@ -418,7 +416,6 @@ function bindCardActions(root){
       const idx=ev.currentTarget.dataset.authIndex;
       if(act==="checkin") checkin(idx, ev.currentTarget);
       else if(act==="claim") claimTrial(idx, ev.currentTarget);
-      else if(act==="select") selectAuth(idx, ev.currentTarget);
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
       else if(act==="cooldown-clear") clearCooldown(ev.currentTarget.getAttribute("data-auth-id")||idx, ev.currentTarget.getAttribute("data-model"), ev.currentTarget);
     });
@@ -431,7 +428,6 @@ function card(a){
   const region=a.region||"cn";
   const isGlobal=region==="global";
   const disabled=!!a.disabled;
-  const selected=!!a.selected;
   const regionBadge=`<span class="badge ${region}">${isGlobal?"Global":"CN"}</span>`;
   // CN: 签到 button; Global: 领取专家加油包 button (or 已领取 if trial_claimed)
   let actionHTML;
@@ -448,25 +444,22 @@ function card(a){
     const btnDisabled=checked?" disabled=\"disabled\"":"";
     actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`;
   }
-  const selectBtn=selected
-    ? `<button class="done" disabled="disabled">使用中</button>`
-    : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
   const cooling=Array.isArray(a.cooling)?a.cooling.filter(c=>Number(c&&c.seconds)>0):[];
   const coolingBadge=cooling.length?`<span class="badge cooling" title="按模型维度的临时冷却">冷却 ${cooling.length}</span>`:"";
-  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+coolingBadge+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
+  const badges=(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+coolingBadge+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
   const coolingHTML=cooling.length?`<div class="cooldown-list">`+cooling.map(c=>{
     const model=String(c.model||"");
     const left=Number(c.seconds)||0;
     return `<div class="cooldown-row"><span class="cd-model">${esc(model)}</span><span class="cd-left">${fmtLeft(left)}</span><button type="button" class="ftag" data-action="cooldown-clear" data-auth-index="${esc(a.auth_index)}" data-auth-id="${esc(a.auth_id||a.auth_index)}" data-model="${esc(model)}" aria-label="解除 ${esc(model)} 的冷却">解除</button></div>`;
   }).join("")+`</div>`:"";
-  return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}">
+  return `<div class="card" data-region="${region}" data-auth="${esc(a.auth_index)}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}</span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
   ${progressHTML(cr)}
   ${coolingHTML}
   ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
-  <div class="actions">${selectBtn}${refreshBtn}${actionHTML}</div>
+  <div class="actions">${refreshBtn}${actionHTML}</div>
   </div>`;
 }
 function fmtLeft(sec){
@@ -480,7 +473,6 @@ let currentFilter="all";
 let accountSearch="";
 let sortDirection="original";
 let lastAccounts=[];
-let activeAuthId="";
 let authFailCount=0;
 let authFailUntil=0;
 // Lazy-load: fetch credits for all cards that lack them, concurrently.
@@ -538,12 +530,10 @@ function updateOneCard(){
     api("/accounts").then(d=>{
       if(!d||d.error) return;
       const fresh=d.accounts||[];
-      activeAuthId=d.active_auth||activeAuthId;
-      // Merge fresh selected/exhausted into lastAccounts and re-render.
+      // Merge fresh exhausted state into lastAccounts and re-render.
       (fresh||[]).forEach(fa=>{
         const idx=all.findIndex(x=>x.auth_index===fa.auth_index);
         if(idx>=0){
-          all[idx].selected=!!fa.selected;
           all[idx].exhausted=!!fa.exhausted;
         }
       });
@@ -813,7 +803,6 @@ function renderModels(){
     }
     const cd=m.credits||{};
     const cdValue=String(cd.value||"");
-    const pinned=cd.source==="override";
     const rate=Number(cd.rate||0);
     // Upstream reports promotions as x0.00; call that out instead of
     // rendering a bare zero that reads like "unknown".
@@ -822,17 +811,18 @@ function renderModels(){
     return `<div class="model-row">
       <span class="model-id" title="${escId}">${escId}</span>
       <span class="model-name mut">${esc(name)}</span>
-      <input class="field-input model-credit" type="text" data-credit-model="${escId}"
-        value="${esc(cdValue)}" placeholder="倍率"
-        title="${pinned?`本地固定：${esc(cdValue)}`:cdValue?`上游同步：${esc(cdValue)}`:"上游未上报"}"
-        aria-label="${escId} 的积分倍率" onchange="saveModelCredit('${escId}',this.value,this)"
-        onkeydown="if(event.key==='Enter'){this.blur()}else if(event.key==='Escape'){renderModels()}">
-      ${cdValue?`<span class="cd-badge${pinned?" pinned":""}${free?" free":""}" title="${pinned?"本地固定":"上游同步"}">${cdLabel}</span>`:`<span class="cd-badge none">—</span>`}
+      ${cdValue?`<span class="model-credit" title="上游积分倍率">${cdLabel}</span>`:`<span class="model-credit">—</span>`}
+      ${free?`<span class="cd-badge free">免费</span>`:""}
       <span class="model-actions">
-        <button type="button" class="ftag" onclick="moveModel('${escId}',-1)" aria-label="上移 ${escId}"${i===0?" disabled":""}>↑</button>
-        <button type="button" class="ftag" onclick="moveModel('${escId}',1)" aria-label="下移 ${escId}"${i===lastModels.length-1?" disabled":""}>↓</button>
-        <button type="button" class="ftag" onclick="toggleModel('${escId}')">${m.custom?"移除":"隐藏"}</button>
+        ${m.hidden?"":`
+          <button type="button" class="ftag" onclick="moveModel('${escId}',-1)" aria-label="上移 ${escId}"${i===0?" disabled":""}>↑</button>
+          <button type="button" class="ftag" onclick="moveModel('${escId}',1)" aria-label="下移 ${escId}"${i===lastModels.length-1?" disabled":""}>↓</button>
+        `}
+        ${m.hidden
+          ? `<button type="button" class="ftag" onclick="restoreModel('${escId}')">恢复</button>`
+          : `<button type="button" class="ftag" onclick="toggleModel('${escId}')">${m.custom?"移除":"隐藏"}</button>`}
       </span>
+      ${m.hidden?`<span class="model-tags"><span class="badge disabled">已隐藏</span></span>`:""}
       ${tags.length?`<span class="model-tags">${tags.join("")}</span>`:""}
     </div>`;
   }).join("")+`</div>`;
@@ -858,6 +848,7 @@ function toggleModel(id){
   }
   modelAction("hide",id);
 }
+function restoreModel(id){ modelAction("restore",id); }
 
 async function addModel(){
   const input=document.getElementById("modelAddInput");
@@ -865,25 +856,6 @@ async function addModel(){
   if(!id){ toast("请输入模型 ID","warn"); return; }
   input.value="";
   await modelAction("add",id);
-}
-// 积分倍率：每行内联编辑。输入框里就是当前生效值，留空保存即恢复上游值。
-async function saveModelCredit(id, value, input){
-  const model=String(id||"").trim();
-  if(!model) return;
-  const next=String(value||"").trim();
-  const before=(lastModels.find(m=>String(m.id)===model)||{}).credits||{};
-  if(next===String(before.value||"")) return; // 没变就别发请求
-  if(input) input.disabled=true;
-  try{
-    await api("/models/credits",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({model:model,credits:next})});
-    await loadModels(false);
-    toast(next?"倍率已固定":"已恢复上游倍率",next?"ok":"warn",next?`${model} → ${next}`:`${model}`);
-  }catch(e){
-    toast("倍率设置失败","err",String(e&&e.message||e));
-    renderModels(); // 还原输入框
-    if(input) input.disabled=false;
-  }
 }
 async function api(path, opts={}){
   const k=getKey();
@@ -945,7 +917,6 @@ async function load(force, btn){
     }
     const accounts=d.accounts||[];
     lastAccounts=accounts;
-    activeAuthId=d.active_auth||"";
     updateFilterCounts(accounts);
     if(!accounts.length){
       g.innerHTML='<div class="loading">暂无 WorkBuddy 账号</div>';
@@ -1022,28 +993,6 @@ async function checkin(idx, btn){
     await load(false);
   }catch(e){
     toast("签到请求失败","err",e.message);
-    busy(btn,false);
-  }
-}
-async function selectAuth(idx, btn){
-  busy(btn,true);
-  try{
-    const d=await api("/select",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
-    if(d.error){
-      toast("选用失败","err",d.error);
-      busy(btn,false);
-      return;
-    }
-    activeAuthId=d.active_auth||idx;
-    const who=d.nickname||idx;
-    const region=d.region==="global"?"Global":"CN";
-    toast("已选用","ok",who+" · "+region);
-    // Re-render from local state for instant feedback, then soft reload
-    (lastAccounts||[]).forEach(a=>{a.selected=(a.auth_id===activeAuthId);});
-    filterRegion(currentFilter, null);
-  }catch(e){
-    toast("选用失败","err",e.message||String(e));
-  }finally{
     busy(btn,false);
   }
 }

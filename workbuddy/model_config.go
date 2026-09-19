@@ -194,6 +194,49 @@ func applyModelOverlay(base []pluginapi.ModelInfo, o modelOverlay) []pluginapi.M
 	return out
 }
 
+// applyModelOverlayForAdmin applies the overlay but keeps hidden entries in the
+// result. The management panel needs to see them so an operator can undo a
+// hide; the serving model capability still uses applyModelOverlay so a hidden
+// entry is not advertised to clients.
+func applyModelOverlayForAdmin(base []pluginapi.ModelInfo, o modelOverlay) []pluginapi.ModelInfo {
+	visible := applyModelOverlay(base, o)
+	hidden := make(map[string]struct{}, len(o.Hide))
+	for _, id := range o.Hide {
+		hidden[strings.TrimSpace(id)] = struct{}{}
+	}
+	if len(hidden) == 0 {
+		return visible
+	}
+
+	seen := make(map[string]struct{}, len(visible)+len(hidden))
+	out := make([]pluginapi.ModelInfo, 0, len(visible)+len(hidden))
+	for _, model := range visible {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, model)
+	}
+	// Preserve the base catalog order for hidden entries. Appending them at the
+	// end would jump rows around as soon as an operator restores one.
+	for _, model := range base {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		if _, isHidden := hidden[id]; !isHidden {
+			continue
+		}
+		if _, already := seen[id]; already {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, model)
+	}
+	return out
+}
+
 // effectiveModelCatalog unions the per-account readiness snapshots into one
 // catalog, then applies the overlay. Accounts that never reported models
 // contribute nothing, which is why an empty result is not an error.
@@ -203,6 +246,20 @@ func effectiveModelCatalog() ([]pluginapi.ModelInfo, string) {
 }
 
 func effectiveModelCatalogTyped() ([]pluginapi.ModelInfo, modelSnapshotSource) {
+	models, source, overlay := baseModelCatalogTyped()
+	return applyModelOverlay(models, overlay), source
+}
+
+// adminModelCatalogTyped is the same base catalog as effectiveModelCatalogTyped,
+// but keeps hidden entries so the management panel can list and restore them.
+func adminModelCatalogTyped() ([]pluginapi.ModelInfo, modelSnapshotSource) {
+	models, source, overlay := baseModelCatalogTyped()
+	return applyModelOverlayForAdmin(models, overlay), source
+}
+
+// baseModelCatalogTyped unions the per-account readiness snapshots into one
+// catalog without applying the overlay.
+func baseModelCatalogTyped() ([]pluginapi.ModelInfo, modelSnapshotSource, modelOverlay) {
 	runtime := activeModelRuntime.Load()
 	seen := make(map[string]struct{})
 	source := modelSourceNone
@@ -235,7 +292,7 @@ func effectiveModelCatalogTyped() ([]pluginapi.ModelInfo, modelSnapshotSource) {
 			}
 		}
 	}
-	return applyModelOverlay(out, loadedModelOverlayForRead()), source
+	return out, source, loadedModelOverlayForRead()
 }
 
 // panelModelAuthFiles lists auth files for catalog aggregation. Falls back to
@@ -265,7 +322,7 @@ func modelSourceRank(source modelSnapshotSource) int {
 // handleModelListQuery reports the effective catalog, its source, the active
 // overlay and each model's cooldown state.
 func handleModelListQuery() map[string]any {
-	models, source := effectiveModelCatalog()
+	models, source := adminModelCatalogTyped()
 	overlay, revision := loadedModelOverlay()
 	items := make([]map[string]any, 0, len(models))
 	for i, m := range models {

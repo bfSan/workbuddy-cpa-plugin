@@ -225,9 +225,10 @@ The legacy `/console/enterprises/personal/models` endpoint carries the field
 too. Upstream formats vary (`x0.29`, `x2.20 credits`, `x0.00`); the string is
 kept verbatim and a numeric rate is parsed from it.
 
-Precedence is local override > upstream. Overrides come from the YAML
-`model_credits` block (persistent, authoritative on reload) or the panel's
-per-model multiplier control (process-local):
+Precedence is the YAML local override > upstream. The panel displays the
+effective multiplier read-only; the management API remains available for
+automation. Configure persistent local overrides through the YAML
+`model_credits` block:
 
 ```yaml
 model_credits:

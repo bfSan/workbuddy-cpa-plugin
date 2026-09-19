@@ -187,7 +187,10 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	snapshot := currentModelRuntime().ensureForAuth(req)
 	models := []pluginapi.ModelInfo{}
 	if snapshot.State.executable() {
-		models = cloneModelInfos(snapshot.Models)
+		// The snapshot intentionally stores the complete upstream catalog so
+		// hidden entries remain restorable. Apply the operator overlay only to
+		// this response copy, after cloning shared state.
+		models = applyModelOverlay(cloneModelInfos(snapshot.Models), loadedModelOverlayForRead())
 		models = filterExcludedModels(models, req.Host)
 	}
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})

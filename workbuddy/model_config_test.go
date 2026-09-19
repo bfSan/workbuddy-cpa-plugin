@@ -67,6 +67,22 @@ func TestApplyModelOverlay_HideWinsOverAdd(t *testing.T) {
 	}
 }
 
+func TestApplyModelOverlayForAdmin_KeepsHiddenEntries(t *testing.T) {
+	base := []pluginapi.ModelInfo{
+		defaultModelInfo("a", ""),
+		defaultModelInfo("b", ""),
+		defaultModelInfo("c", ""),
+	}
+	visible := idsOf(applyModelOverlay(base, modelOverlay{Hide: []string{"b"}}))
+	if want := []string{"a", "c"}; !reflect.DeepEqual(visible, want) {
+		t.Fatalf("serving catalog: got %v, want %v", visible, want)
+	}
+	admin := idsOf(applyModelOverlayForAdmin(base, modelOverlay{Hide: []string{"b"}}))
+	if want := []string{"a", "c", "b"}; !reflect.DeepEqual(admin, want) {
+		t.Fatalf("admin catalog: got %v, want hidden entry preserved", admin)
+	}
+}
+
 func TestApplyModelOverlay_EmptyOverlayIsIdentity(t *testing.T) {
 	base := []pluginapi.ModelInfo{
 		defaultModelInfo("a", ""),

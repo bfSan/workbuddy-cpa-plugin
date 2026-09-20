@@ -41,7 +41,6 @@ The test suite (115 tests at the time of writing) covers:
 - tool_choice normalization (object → string, `none` suppresses tools)
 - SSE chunk cleaning (empty tool_call shells stripped)
 - UID sanitization for auth file names (path traversal defense)
-- Scheduler pick behavior (sticky + fallback + `scheduler_mode: off` defers)
 - Credits lifecycle transitions (exhausted → disable / delete / re-enable)
 
 ## Lint

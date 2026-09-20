@@ -267,9 +267,6 @@ func buildDashboardExWithCallback(force, fetchCredits bool, callbackID string) m
 	checkinAutoMu.RLock()
 	auto := checkinAuto
 	checkinAutoMu.RUnlock()
-	// Keep the automatic scheduler selection current. This is internal state;
-	// the panel no longer exposes a manual account selection.
-	ensureDefaultActiveAuth(out)
 	// Aggregate credits for panel/API consumers (all accounts currently in out).
 	sum := summarizeCredits(out)
 	for i := range out {

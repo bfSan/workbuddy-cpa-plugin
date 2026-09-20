@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Routing ownership
+
+- Remove the plugin-side `scheduler.pick` capability, `scheduler_mode`
+  configuration, and active-auth bookkeeping. CPA owns OAuth selection,
+  retry, and fallback routing exclusively.
+- Keep per-model cooldowns as observable and clearable plugin state without
+  using them to choose an OAuth route.
+
 ### Per-model cooldown
 
 - Track throttling per `(auth, model)` pair instead of per account, so a 429 on
@@ -10,8 +18,6 @@
   hard credit failures (402 / out of credits) to the existing lifecycle path.
 - Never record a failure without a model ID: that would freeze the account,
   which is what the pair-scoped table exists to avoid.
-- Skip cooling pairs in `scheduler.pick`, and fall back to the cooling set when
-  every candidate is throttled for that model rather than refusing to route.
 - Expose `GET /cooldowns` and `POST /cooldowns/clear` (the latter requires
   `auth_id` and refuses a global wipe), plus a per-account `cooling` list on
   `/accounts`.
@@ -52,7 +58,7 @@
 - Discover each authenticated account's model entitlements from WorkBuddy, with a 404/405-only legacy endpoint fallback.
 - Enrich missing serving metadata from models.dev without a static model mapping or metadata table.
 - Persist separate global metadata and per-auth model last-good caches, and use them for fail-closed `ready` or executable `stale` startup semantics.
-- Expose redacted `model_status` readiness in the panel and gate executor and scheduler access to `ready` or `stale` accounts.
+- Expose redacted `model_status` readiness in the panel and gate executor access to `ready` or `stale` accounts.
 
 ### Management and panel maintenance
 
@@ -116,8 +122,6 @@
   shows updated balance without waiting for the async reconcile pass.
 - `cache.go` — P1-1 documented trade-off: force=true callers still join
   singleflight (skipping would re-introduce P0-2).
-- `main.go` — P0-5: `scheduler_mode` ConfigField description now warns that
-  `off + lifecycle_auto=false` leaves exhausted accounts routable.
 
 ## 0.8.1
 

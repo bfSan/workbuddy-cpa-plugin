@@ -97,7 +97,7 @@ type resourcePackage struct {
 }
 
 // -----------------------------------------------------------------------------
-// Auto check-in scheduler (09:00 / 21:00 local)
+// Auto check-in timer (09:00 / 21:00 local)
 // -----------------------------------------------------------------------------
 
 // Management API routes + handler

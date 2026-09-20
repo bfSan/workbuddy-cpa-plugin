@@ -1,7 +1,7 @@
 // cache.go holds the per-account in-memory cache for plan / checkin / credits
 // snapshots and the singleflight machinery that dedups concurrent upstream
 // fetches for the same account. The cache is the coordination point between
-// the dashboard, reconcile, and scheduler pick paths.
+// the dashboard and reconcile paths.
 package main
 
 import (

@@ -64,7 +64,6 @@ func configure(raw []byte) error {
 	// Parse config without holding any lock (fixes nested-lock hazard).
 	nextCheckinAuto := true
 	nextLifecycleAuto := true
-	nextSchedulerMode := schedulerModeOff // reset to default on reconfigure
 	nextKeepaliveAuto := true
 	nextMgmtKey := ""
 	nextProxyURL := ""
@@ -92,9 +91,6 @@ func configure(raw []byte) error {
 	}
 	if value, ok := configScalars["lifecycle_auto"]; ok {
 		nextLifecycleAuto = enabledConfigValue(value)
-	}
-	if configScalars["scheduler_mode"] == schedulerModeCredits {
-		nextSchedulerMode = schedulerModeCredits
 	}
 	cfgURL = configScalars["usage_report_url"]
 	cfgKey = configScalars["usage_report_key"]
@@ -125,10 +121,6 @@ func configure(raw []byte) error {
 	lifecycleAuto = nextLifecycleAuto
 	lifecycleAutoMu.Unlock()
 
-	schedulerModeMu.Lock()
-	schedulerMode = nextSchedulerMode
-	schedulerModeMu.Unlock()
-
 	keepaliveAutoMu.Lock()
 	keepaliveAuto = nextKeepaliveAuto
 	keepaliveAutoMu.Unlock()
@@ -143,7 +135,7 @@ func configure(raw []byte) error {
 	managementAPIKeyMu.Unlock()
 
 	resolveUsageReport(cfgURL, cfgKey)
-	ensureScheduler()
+	ensureCheckinLoop()
 	currentModelRuntime().commitFeatureRuntime(nextFeatures)
 	return nil
 }
@@ -236,7 +228,7 @@ func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
 		switch key.Value {
 		case "checkin_auto", "lifecycle_auto", "token_keepalive":
 			expected = "boolean"
-		case "scheduler_mode", "usage_report_url", "usage_report_key", "management_key":
+		case "usage_report_url", "usage_report_key", "management_key":
 			expected = "string"
 		default:
 			continue

@@ -2,8 +2,8 @@
 //
 // A 429 from one model says nothing about the account's ability to serve other
 // models, so cooling the whole credential wastes the rest of its quota. This
-// tracks failures at the (authID, modelID) pair instead and lets the scheduler
-// skip only the pairs that are actually throttled.
+// tracks failures at the (authID, modelID) pair so only the affected pair is
+// reported as throttled.
 //
 // Account-wide failures (invalid token, hard credit exhaustion) stay with the
 // existing lifecycle path — this table is only for the narrow case.

@@ -40,9 +40,6 @@ built-in management dashboard.
 - **Dashboard** — embedded panel at `/v0/resource/plugins/workbuddy/panel`
   with credits progress bars, plan badges, exhausted/disabled flags, region
   filter, and credential import.
-- **Scheduler** (optional) — `scheduler_mode: credits` makes the plugin pick
-  an automatically selected usable account; `off` (default) defers to CPA's built-in
-  scheduler entirely.
 - **Usage forwarding** — implements `UsagePlugin`; every request's usage
   record is forwarded to a configurable CPAMP endpoint. No record is sent
   unless a URL+key are configured.
@@ -131,12 +128,6 @@ plugins:
       # re-enable CN after check-in restores credits (default true).
       lifecycle_auto: true
 
-      # Scheduler behavior (default "off"):
-      #   off     → defer to CPA's built-in scheduler entirely
-      #   credits → plugin picks an automatically selected account (with fallback
-      #             when that account is exhausted / disabled)
-      scheduler_mode: "off"
-
       # CPAMP usage forwarding. Both must be set for any record to be sent.
       # Falls back to USAGE_REPORT_URL / USAGE_REPORT_KEY /
       # CPAMP_ADMIN_KEY env vars or docker secret files when unset here.
@@ -213,9 +204,9 @@ Account-wide failures stay with the lifecycle path — this table is only for th
 narrow case. A request without a model ID is never recorded, because without a
 model the entry would freeze the account, which is exactly what it avoids.
 
-When `scheduler_mode: credits`, a cooling pair is skipped in favour of another
-candidate; if every candidate is cooling for that model, the plugin still picks
-one rather than refusing to route. Switching models is unaffected.
+Cooldown data is observational in the panel and can be cleared through the
+management API. OAuth selection, retry, and fallback routing remain entirely
+with CPA.
 
 ## Credit multipliers
 
@@ -275,7 +266,7 @@ last-good cache leaves the account `failed`.
 
 Only `ready` and `stale` are executable states. `not_started`, `loading`, and
 `failed` are blocked at all executor entry points with a fixed, redacted
-`not_ready` response and HTTP 503; the scheduler also excludes them. The panel
+`not_ready` response and HTTP 503. The panel
 keeps loading and exposes `model_status` with per-account source and timestamp
 fields. Its fixed error categories are `auth_invalid`,
 `workbuddy_transport`, `workbuddy_http`, `workbuddy_schema`,

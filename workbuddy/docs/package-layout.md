@@ -13,13 +13,11 @@ Reasons:
 3. Current modularization already uses **same-package multi-file**:
    - `main.go` — ABI, OAuth, executor
    - `management.go` — panel, check-in, import
-   - `scheduler.go` — scheduler.pick
    - `panel.html` — embedded UI
    - `*_test.go` — unit tests
 
 ## Done instead of G16
 
-- New domain files (`scheduler.go`) rather than growing only `main.go`
 - Document boundaries in README
 
 Full DDD `internal/` (as in cli-smart-router) is frozen unless CPA adds a

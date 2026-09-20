@@ -1,6 +1,6 @@
 // credits_handler.go implements the management API endpoints that mutate or
-// read account state: import credential, toggle check-in, claim trial, select
-// active auth, and query credits for one account or all.
+// read account state: import credential, toggle check-in, claim trial, and
+// query credits for one account or all.
 package main
 
 import (

@@ -24,13 +24,6 @@ func TestRegistrationConfigFieldsMatchImplementedConfig(t *testing.T) {
 			proxyDescription = strings.ToLower(field.Description)
 		case "proxy_url":
 			t.Fatal("proxy_url alias must not be registered")
-		case "scheduler_mode":
-			if strings.Contains(strings.ToLower(field.Description), "highest remaining") {
-				t.Fatal("scheduler_mode description advertises unimplemented highest-credit ranking")
-			}
-			if !strings.Contains(strings.ToLower(field.Description), "automatically selected") {
-				t.Fatal("scheduler_mode description must document automatic routing")
-			}
 		}
 	}
 	if managementKeyCount != 1 {

@@ -37,7 +37,7 @@ plugins:
       enabled: true
 ```
 
-可选的插件配置项（`models`、`checkin_auto`、`scheduler_mode` 等）说明见
+可选的插件配置项（`models`、`checkin_auto` 等）说明见
 [workbuddy/README_CN.md](workbuddy/README_CN.md)。
 
 ## 构建

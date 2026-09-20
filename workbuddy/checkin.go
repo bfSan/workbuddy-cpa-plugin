@@ -1,5 +1,5 @@
 // checkin.go implements daily check-in for CN accounts: the manual
-// handleManualCheckin endpoint, the 09:00 / 21:00 auto scheduler, and the
+// handleManualCheckin endpoint, the 09:00 / 21:00 auto timer, and the
 // per-account mutex that prevents duplicate check-ins from racing browser
 // tabs. Global accounts are excluded — they use one-shot trial claims instead.
 package main
@@ -14,18 +14,18 @@ import (
 )
 
 var (
-	schedulerStop chan struct{}
-	schedulerMu   sync.Mutex
+	checkinLoopStop chan struct{}
+	checkinLoopMu   sync.Mutex
 )
 
-func ensureScheduler() {
-	schedulerMu.Lock()
-	defer schedulerMu.Unlock()
-	if schedulerStop != nil {
+func ensureCheckinLoop() {
+	checkinLoopMu.Lock()
+	defer checkinLoopMu.Unlock()
+	if checkinLoopStop != nil {
 		return // already running
 	}
-	schedulerStop = make(chan struct{})
-	go schedulerLoop(schedulerStop)
+	checkinLoopStop = make(chan struct{})
+	go checkinLoop(checkinLoopStop)
 }
 
 // Note: there is deliberately no stopCheckinScheduler. The plugin shutdown
@@ -66,7 +66,7 @@ func nextCheckinTime(now time.Time) time.Time {
 	return earliest
 }
 
-func schedulerLoop(stop chan struct{}) {
+func checkinLoop(stop chan struct{}) {
 	for {
 		next := nextCheckinTime(time.Now())
 		timer := time.NewTimer(time.Until(next))

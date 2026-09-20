@@ -202,8 +202,8 @@ func cliproxyPluginShutdown() {
 	// mutexes, channel close, goroutine synchronization — risks a SIGSEGV in
 	// cgo (observed on every docker restart: SIGSEGV in
 	// _Cfunc_cliproxy_shutdown_plugin, PC near a freed runtime pointer).
-	// The scheduler goroutine and janitor ticker hold no resources that
-	// outlive the process; the OS reclaims them on exit.
+	// The janitor ticker holds no resources that outlive the process; the OS
+	// reclaims it on exit.
 }
 
 // -----------------------------------------------------------------------------
@@ -289,8 +289,6 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return okEnvelope(managementRegistration())
 	case pluginabi.MethodManagementHandle:
 		return handleManagement(request)
-	case pluginabi.MethodSchedulerPick:
-		return handleSchedulerPick(request)
 	case pluginabi.MethodUsageHandle:
 		return handleUsage(request)
 	default:
@@ -337,13 +335,12 @@ type registrationCapability struct {
 	ExecutorModelScope    pluginapi.ExecutorModelScope `json:"executor_model_scope"`
 	ExecutorInputFormats  []string                     `json:"executor_input_formats,omitempty"`
 	ExecutorOutputFormats []string                     `json:"executor_output_formats,omitempty"`
-	Scheduler             bool                         `json:"scheduler"`
 	ManagementAPI         bool                         `json:"management_api"`
 	UsagePlugin           bool                         `json:"usage_plugin"`
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.3"
+var version = "0.9.4"
 
 func wbRegistration() registration {
 	return registration{
@@ -366,7 +363,6 @@ func wbRegistration() registration {
 				{Name: "enterprise_credits", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Probe strict CN enterprise credits before personal resource packages (default false; Global unchanged)."},
 				{Name: "management_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Bearer key enforced by WorkBuddy for mutating management endpoints; also env WB_MANAGEMENT_KEY."},
 				{Name: "proxy-url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional plugin-level proxy for all WorkBuddy HTTP traffic. Supports http, https, socks5, and socks5h; empty preserves existing routing and host-bridged calls inherit CPA. Invalid settings fail closed. Explicit proxy traffic bypasses CPA request-log."},
-				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick an automatically selected usable account, with non-exhausted fallback). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},
 			},
@@ -380,7 +376,6 @@ func wbRegistration() registration {
 			ExecutorInputFormats:  []string{"chat-completions"},
 			ExecutorOutputFormats: []string{"chat-completions"},
 			ManagementAPI:         true,
-			Scheduler:             true,
 			UsagePlugin:           true,
 		},
 	}

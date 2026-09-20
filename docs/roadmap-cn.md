@@ -55,7 +55,6 @@ policy.go  isSoftRateLimit() 判定为软限流
       ↓
 【新增】markModelCooldown(authID, model, duration)
       ↓
-scheduler.go  handleSchedulerPick 过滤掉该 (auth, model) 对
 ```
 
 **账号级 vs 模型级**的分流规则（照搬 hub 已验证的行为）：
@@ -71,7 +70,6 @@ scheduler.go  handleSchedulerPick 过滤掉该 (auth, model) 对
 - **新增** `cooldown.go` — 冷却表 + 读写 + 过期清理
 - `policy.go` — 增加 `isAccountLevelFailure()` 区分两类
 - `lifecycle.go` — `reconcileAfterExecutorError()` 里接入冷却写入
-- `scheduler.go` — `handleSchedulerPick` 里按 `(auth, model)` 过滤候选
 - `model_readiness.go` — 快照里带上每个模型的冷却剩余时间
 - `panel.go` — 账号行展示各模型冷却倒计时
 
@@ -173,7 +171,6 @@ POST /v0/management/plugins/workbuddy/models/move   # 上移/下移
 - `recordUpstreamFailure()` 从 `main.go` 的非流路径、`stream.go` 的异步泵、
   `collectUpstreamStream()` 的同步兜底三处接入，覆盖全部 executor 入口；
 - 429 无积分语义 → 300s；其他上游错误 → 60s；硬积分错误交回 lifecycle；
-- `scheduler.go` 的 `handleSchedulerPick` 按请求模型过滤候选；
   **全部候选都在冷却时仍返回一个**，避免直接 503；
 - 管理 API `GET /cooldowns`、`POST /cooldowns/clear`（必须带 `auth_id`）；
 - 面板账号卡带「冷却 N」徽标，每个被限流模型一行，带剩余时间和「解除」；

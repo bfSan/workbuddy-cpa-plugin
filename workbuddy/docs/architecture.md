@@ -11,7 +11,6 @@ driven via the `pluginabi` RPC interface.
 | `ModelProvider` | `models.go`, `model_source_*.go`, `model_store.go`, `model_readiness.go`, `model_config.go` | Static `auto` fallback, configured authoritative catalog or authenticated per-account discovery, models.dev enrichment, persistent last-good cache, readiness gates, alias reverse-resolution, plugin-owned `hidden_models` filter, host `oauth-excluded-models` filter |
 | `AuthProvider` | `oauth.go`, `auth_parse.go` (in `authfile.go` / `main.go`) | OAuth login flow (CN + Global), token refresh, auth file parse |
 | `Executor` | `executor.go`, `stream.go`, `payload.go` | Chat completions, streaming SSE pump, request body rewriting |
-| `Scheduler` | `scheduler.go`, `active_auth.go` | Optional automatic account routing (`scheduler_mode: credits`) |
 | `ManagementAPI` | `management.go`, `panel.go`, `checkin.go`, `credits_handler.go`, `billing.go`, `usage_config.go`, `host_auth.go` | Dashboard, manual check-in, credits query, import credential, config |
 | `UsagePlugin` | `usage.go` | Forward every request's usage record to CPAMP |
 
@@ -45,9 +44,9 @@ usage.go          handleUsage + publishUsage + forwardUsageToCPAMP + sseUsageCol
 
 management.go     managementRegistration + handleManagement + auth/ratelimit
 panel.go          buildDashboardEx + summarizeCredits + servePanel + panelHTML
-checkin.go        schedulerLoop + runAutoCheckin + handleManualCheckin + 
+checkin.go        checkinLoop + runAutoCheckin + handleManualCheckin +
                   classifyCheckinTargets/executeCheckinBatch/summarizeCheckinResults
-credits_handler.go handleImportAuth/CheckinConfig/ClaimTrial/SelectAuth/CreditsQuery
+credits_handler.go handleImportAuth/CheckinConfig/ClaimTrial/CreditsQuery
 billing.go        fetchCheckinStatus/fetchUserResource/fetchPaymentType/
                   performCheckinCall/performTrialCall + JSON helpers
 usage_config.go   configure + resolveUsageReport + probe* + config vars
@@ -58,9 +57,6 @@ lifecycle.go      reconcileOneAccount/AllAccounts/AfterExecutorError/ByUID +
 policy.go         lifecycleAction decisions (pure functions) + displayNote + labelForAuth
 authfile.go       authFileNameFor/sanitizeUIDForFileName/hostAuthPersist/deleteAuth +
                   path safety checks
-
-scheduler.go      handleSchedulerPick + candidateDisabled + cachedCreditsScore
-active_auth.go    automatic activeAuthID state + pickActiveAuth + clearActiveAuthIfMatch
 
 cache.go          accountCache + accountDetailFlight singleflight + prune
 redact.go         redactSecrets + 4 regex + truncateRedacted + truncate
@@ -166,17 +162,15 @@ increments the model config generation under the same commit lock. The
 generation gate prevents a late request for an old config, token, or identity
 from saving or publishing over current state.
 
-Panel, executor, and scheduler only read immutable snapshots. They do not wait
-on flights or perform network or disk work. Executor accepts `ready` and
-`stale`; other states return redacted `not_ready` HTTP 503. Scheduler considers
-only `ready` and `stale`, and defers to CPA when no eligible candidate exists.
-There is no background refresh, panel retry endpoint, or Enterprise custom
-model source.
+Panel and executor only read immutable snapshots. They do not wait on flights
+or perform network or disk work. Executor accepts `ready` and `stale`; other
+states return redacted `not_ready` HTTP 503. There is no background refresh,
+panel retry endpoint, or Enterprise custom model source.
 
 ### Daily check-in (CN, 09:00 / 21:00)
 
 ```
-schedulerLoop → runAutoCheckin (sem=4 concurrent)
+checkinLoop → runAutoCheckin (sem=4 concurrent)
   → processAutoCheckinAccount per account
       → fetchCheckinStatus → performCheckinCall if needed
       → update accountCache (merge, not wipe)
@@ -233,13 +227,12 @@ panel.html → /v0/management/plugins/workbuddy/accounts
    (historical default). When set, mutating endpoints require a constant-time
    Bearer match plus a per-IP token bucket.
 
-6. **Scheduler defers by default.** `scheduler_mode: off` (default) makes
-   `handleSchedulerPick` always return `Handled: false` so CPA's built-in
-   scheduler picks accounts. The plugin only routes when the operator
-   explicitly opts in with `scheduler_mode: credits`.
+6. **Routing stays with CPA.** The plugin does not register `scheduler.pick`,
+   does not keep an active OAuth account, and does not choose retry or fallback
+   routes. Cooldown entries are observational state for the panel/API.
 
-7. **No goroutine leaks across hot-reload.** The scheduler loop uses a
-   `schedulerStop` channel and is idempotent. The plugin's `Shutdown` is a
+7. **No goroutine leaks across hot-reload.** The check-in loop uses a
+   `checkinLoopStop` channel and is idempotent. The plugin's `Shutdown` is a
    deliberate no-op because c-shared runtime teardown races with Go sync
    primitives (SIGSEGV) — `dlclose` cleans up the whole runtime anyway.
 
@@ -259,6 +252,3 @@ panel.html → /v0/management/plugins/workbuddy/accounts
 - **Management**: `management.register` returns routes under
   `/v0/management/plugins/workbuddy/*` and a panel resource under
   `/v0/resource/plugins/workbuddy/panel`.
-- **Scheduler**: `scheduler.pick` RPC reads readiness and returns `Handled: true`
-  with an `AuthID` only when `scheduler_mode: credits` and a `ready` or `stale`
-  candidate exists; otherwise it defers.

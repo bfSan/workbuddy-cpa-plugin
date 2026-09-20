@@ -25,8 +25,6 @@
 - **Trial 领取** — Global 账号可在面板领取一次性 250 积分专家加油包。
 - **积分面板** — 内嵌面板 `/v0/resource/plugins/workbuddy/panel`，含积分
   进度条、套餐徽章、耗尽/禁用标记、CN/Global 筛选、凭证导入。
-- **调度器**（可选） — `scheduler_mode: credits` 让插件选中面板选中的账号；
-  `off`（默认）完全交给 CPA 内置调度。
 - **Usage 上报** — 实现 `UsagePlugin` 能力，每条请求的 usage record 转发到
   可配置的 CPAMP 端点。未配置 URL+key 时不上报。
 
@@ -108,11 +106,6 @@ plugins:
 
       # 积分生命周期：CN 耗尽禁用 / Global 耗尽删除 / CN 回血恢复（默认 true）。
       lifecycle_auto: true
-
-      # 调度行为（默认 "off"）：
-      #   off     → 完全交给 CPA 内置调度
-      #   credits → 插件选中面板选中的账号（耗尽/禁用时回退）
-      scheduler_mode: "off"
 
       # CPAMP usage 上报。URL+key 都设置才会上报。
       # 未配置时 fallback 到 USAGE_REPORT_URL / USAGE_REPORT_KEY /
@@ -208,11 +201,8 @@ POST /models/action   单条编辑 {"action":"hide|restore|move|add","id":"...",
 **账号级故障不进这张表**：token 失效、硬额度耗尽仍由 lifecycle 处理，账号级行为不变。
 请求模型 ID 为空时不写入——没有模型维度就会退化成整账号冻结，这正是要避免的。
 
-调度行为（`scheduler_mode: credits` 时）：
-
-- 某账号的该模型正在冷却 → 跳过这个账号，改用其他非冷却候选；
-- 所有账号的该模型都在冷却 → 仍从冷却集合里挑一个返回，慢一点也强过硬失败；
-- 换个模型请求 → 冷却不影响，账号照常可用。
+冷却信息用于面板观测和管理 API 手动解除。OAuth 选择、重试与降级路由完全由
+CPA 负责，插件不介入。
 
 管理 API（路径前缀 `/v0/management/plugins/workbuddy`）：
 
@@ -285,7 +275,7 @@ Linux root 的默认路径是
 账号进入 `failed`。
 
 只有 `ready` 和 `stale` 可以执行。`not_started`、`loading`、`failed` 会在所有
-executor 入口返回固定、脱敏的 `not_ready` 和 HTTP 503，scheduler 也会排除这些
+executor 入口返回固定、脱敏的 `not_ready` 和 HTTP 503；
 账号。Panel 保持可访问，并通过 `model_status` 返回账号级来源和时间戳。固定错误
 分类是 `auth_invalid`、`workbuddy_transport`、`workbuddy_http`、
 `workbuddy_schema`、`models_dev_transport`、`models_dev_http`、

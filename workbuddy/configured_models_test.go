@@ -168,7 +168,7 @@ func TestParseFeatureRuntimeConfiguredModelsRejectsInvalidYAMLValues(t *testing.
 		{name: "explicitly tagged string entry", raw: "models: [!!str 123]\n"},
 		{name: "boolean entry", raw: "models: [true]\n"},
 		{name: "null entry", raw: "models: [null]\n"},
-		{name: "literal multiline entry", raw: "models:\n  - |-\n    serve-alpha\n    scheduler_mode: credits\n"},
+		{name: "literal multiline entry", raw: "models:\n  - |-\n    serve-alpha\n    serve-beta\n"},
 		{name: "escaped multiline entry", raw: "models: [\"serve-alpha\\nserve-beta\"]\n"},
 		{name: "escaped leading newline", raw: "models: [\"\\nserve-alpha\"]\n"},
 		{name: "escaped trailing newline", raw: "models: [\"serve-alpha\\n\"]\n"},
@@ -195,9 +195,9 @@ func TestParseTopLevelConfigScalarsRejectsWrongTypesAndMerges(t *testing.T) {
 		{name: "management sequence", raw: "management_key: [replacement]\n"},
 		{name: "management boolean", raw: "management_key: true\n"},
 		{name: "lifecycle sequence", raw: "lifecycle_auto: [false]\n"},
-		{name: "scheduler incompatible tag", raw: "scheduler_mode: !!seq credits\n"},
+		{name: "usage URL incompatible tag", raw: "usage_report_url: !!seq https://example.invalid\n"},
 		{name: "usage key mapping", raw: "usage_report_key: {value: secret}\n"},
-		{name: "root merge", raw: "defaults: &d\n  lifecycle_auto: false\n  scheduler_mode: credits\n  models: [serve-alpha]\n<<: *d\n"},
+		{name: "root merge", raw: "defaults: &d\n  lifecycle_auto: false\n  models: [serve-alpha]\n<<: *d\n"},
 		{name: "alias key", raw: "key_name: &k management_key\n*k: [replacement]\n"},
 		{name: "alias value", raw: "replacement: &v secret\nmanagement_key: *v\n"},
 		{name: "unused anchor", raw: "management_key: &key secret\n"},
@@ -248,7 +248,6 @@ func TestConfigureConfiguredModelsIgnoresScalarContinuationSettings(t *testing.T
 	previousRuntime := activeModelRuntime.Swap(runtime)
 	oldFeatures := featureRuntime.Load()
 	oldProxy := proxyState.Load()
-	restoreScheduler := setSchedulerMode(schedulerModeOff)
 	usageReportMu.RLock()
 	oldUsageURL, oldUsageKey := usageReportURL, usageReportKey
 	usageReportMu.RUnlock()
@@ -256,21 +255,17 @@ func TestConfigureConfiguredModelsIgnoresScalarContinuationSettings(t *testing.T
 		activeModelRuntime.Store(previousRuntime)
 		featureRuntime.Store(oldFeatures)
 		proxyState.Store(oldProxy)
-		restoreScheduler()
 		usageReportMu.Lock()
 		usageReportURL, usageReportKey = oldUsageURL, oldUsageKey
 		usageReportMu.Unlock()
 	})
 
 	for _, raw := range []string{
-		"models:\n  - >-\n    serve-alpha\n    scheduler_mode: credits\nusage_report_url: http://127.0.0.1:1\n",
-		"models:\n  - \"serve-alpha\n    scheduler_mode: credits\"\nusage_report_url: http://127.0.0.1:1\n",
+		"models:\n  - >-\n    serve-alpha\n    serve-beta\nusage_report_url: http://127.0.0.1:1\n",
+		"models:\n  - \"serve-alpha\n    serve-beta\"\nusage_report_url: http://127.0.0.1:1\n",
 	} {
 		if err := configure(mustJSON(map[string]any{"config_yaml": []byte(raw)})); err != nil {
 			t.Fatal(err)
-		}
-		if got := loadedSchedulerMode(); got != schedulerModeOff {
-			t.Fatalf("scheduler mode = %q, want %q", got, schedulerModeOff)
 		}
 	}
 }

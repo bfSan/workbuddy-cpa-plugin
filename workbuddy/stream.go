@@ -23,6 +23,25 @@ import (
 
 var streamHostCall = hostCall
 
+// emptyStreamError renders an upstream "stream closed before first payload"
+// failure.
+//
+// The trailing "(unexpected EOF)" is load-bearing. CPA classifies the error
+// text after it crosses host.stream.emit: the connection-lifecycle marker makes
+// `shouldSkipCredentialCooldown` return early, so a gateway that accepts the
+// request and then closes the SSE stream cannot promote a single-model blip
+// into a credential-wide cooldown. Without the marker the same failure lands in
+// the default branch and marks the whole auth unavailable.
+func emptyStreamError() error {
+	return fmt.Errorf("empty upstream stream (unexpected EOF)")
+}
+
+// upstreamReadError renders a mid-stream read failure with the same
+// transport-lifecycle classification.
+func upstreamReadError(err error) error {
+	return fmt.Errorf("upstream stream read error (unexpected EOF): %w", err)
+}
+
 type upstreamStatusError struct {
 	status  int
 	message string
@@ -148,12 +167,16 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	// surface it as an error frame and record the attempt as failed.
 	if err := scanner.Err(); err != nil {
 		publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, err.Error())
-		streamEmitError(streamID, fmt.Sprintf("upstream stream read error: %v", err))
+		readErr := upstreamReadError(err)
+		recordUpstreamFailure(authID, upstreamModel, 0, readErr.Error())
+		streamEmitError(streamID, readErr.Error())
 		return
 	}
 	if validEvents == 0 {
-		publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, "empty upstream stream")
-		streamEmitError(streamID, "empty upstream stream")
+		errEmpty := emptyStreamError()
+		publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, errEmpty.Error())
+		recordUpstreamFailure(authID, upstreamModel, 0, errEmpty.Error())
+		streamEmitError(streamID, errEmpty.Error())
 		return
 	}
 	publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), false, 0, "")
@@ -247,10 +270,10 @@ func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageC
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: []byte(cleaned)})
 	}
 	if err := scanner.Err(); err != nil {
-		return chunks, fmt.Errorf("upstream stream read error: %w", err)
+		return chunks, upstreamReadError(err)
 	}
 	if validEvents == 0 {
-		return chunks, fmt.Errorf("upstream stream contained no valid data events")
+		return chunks, emptyStreamError()
 	}
 	return chunks, nil
 }
@@ -404,10 +427,10 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 	// (sdk/api/handlers executeWithPluginExecutor), so fail fast here instead
 	// of assembling a partial completion nobody can safely consume.
 	if scanErr != nil {
-		return nil, fmt.Errorf("upstream stream read error: %w", scanErr)
+		return nil, upstreamReadError(scanErr)
 	}
 	if !sawChoice {
-		return nil, fmt.Errorf("upstream stream contained no valid completion events")
+		return nil, emptyStreamError()
 	}
 
 	message := map[string]any{"role": firstNonEmpty(role, "assistant"), "content": content}

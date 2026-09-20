@@ -125,11 +125,23 @@ func TestPumpUpstreamStreamEmptyUsesNativeErrorAndClosesOnce(t *testing.T) {
 	pumpUpstreamStream(pumpTestRequest(t), nil, "stream-1", false, "model", "model", "", time.Now(), "", "")
 
 	messages := nativeStreamErrors(t, *calls)
-	if len(messages) != 1 || messages[0] != "empty upstream stream" {
+	if len(messages) != 1 || messages[0] != emptyStreamError().Error() {
 		t.Fatalf("native errors = %#v", messages)
 	}
 	if closes := streamCloseCallCount(*calls); closes != 1 {
 		t.Fatalf("stream closes = %d, want 1", closes)
+	}
+}
+
+// TestEmptyStreamErrorIsConnectionLifecycle pins the wording CPA's cooldown
+// layer keys on: isConnectionLifecycleMessage matches "unexpected eof", so an
+// upstream that accepts the request and then closes the SSE stream stays a
+// single-model blip instead of marking the whole auth unavailable.
+func TestEmptyStreamErrorIsConnectionLifecycle(t *testing.T) {
+	for _, err := range []error{emptyStreamError(), upstreamReadError(io.ErrUnexpectedEOF)} {
+		if !strings.Contains(strings.ToLower(err.Error()), "unexpected eof") {
+			t.Fatalf("error %q lacks the connection-lifecycle marker", err.Error())
+		}
 	}
 }
 

@@ -1257,6 +1257,12 @@ async function importAuth(btn){
     if(ok) await load(true)
   }finally{busy(btn,false)}
 }
+document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
+document.addEventListener("keydown",e=>{
+  if(e.key=="Escape"&&document.getElementById("importModal").classList.contains("show")) closeImportModal();
+  if(e.key=="Escape"&&document.getElementById("desensitizeModal").classList.contains("show")) closeDesensitizeModal();
+  if(e.key=="Escape"&&document.getElementById("oauthModal").classList.contains("show")) closeOAuthModal();
+});
 let oauthState="";
 let oauthURL="";
 let oauthDeadline=0;
@@ -1375,12 +1381,6 @@ function openOAuthLogin(btn){
 function restartOAuthLogin(btn){
   return startOAuthLogin(btn);
 }
-document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
-document.addEventListener("keydown",e=>{
-  if(e.key=="Escape"&&document.getElementById("importModal").classList.contains("show")) closeImportModal();
-  if(e.key=="Escape"&&document.getElementById("desensitizeModal").classList.contains("show")) closeDesensitizeModal();
-  if(e.key=="Escape"&&document.getElementById("oauthModal").classList.contains("show")) closeOAuthModal();
-});
 /* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
 if(window.__wbThemeSync)window.__wbThemeSync();
 async function loadInitial(){

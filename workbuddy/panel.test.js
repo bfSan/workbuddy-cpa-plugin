@@ -259,6 +259,44 @@ test("model status message is rendered as text", () => {
   assert.equal(banner.innerHTML, "");
 });
 
+test("panel exposes the OAuth login entry and starts a login flow", async () => {
+  const calls = [];
+  const timers = [];
+  const { context, elements, storage } = loadPanel({
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      if (url.endsWith("/oauth/start")) {
+        return fakeResponse(200, "application/json", JSON.stringify({
+          success: true,
+          url: "https://login.example.test/oauth?state=panel-state",
+          state: "panel-state",
+          expiresIn: 300,
+        }));
+      }
+      throw new Error("unexpected fetch");
+    },
+  });
+  context.setTimeout = (fn) => {
+    timers.push(fn);
+    return timers.length;
+  };
+  context.clearTimeout = () => {};
+  storage.set("workbuddy-mgmt-key", "test-key");
+
+  const html = fs.readFileSync(path.join(__dirname, "panel.html"), "utf8");
+  assert.match(html, /id="oauthLoginBtn"[^>]*>OAuth 登录</);
+  assert.match(html, /id="oauthModal"/);
+
+  await context.startOAuthLogin(fakeElement());
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/plugins\/workbuddy\/oauth\/start$/);
+  assert.equal(calls[0].options.method, "POST");
+  assert.equal(elements.get("oauthUrl").value, "https://login.example.test/oauth?state=panel-state");
+  assert.match(elements.get("oauthStatus").textContent, /请在浏览器完成登录/);
+  assert.equal(elements.get("oauthModal").classList.contains("show"), true);
+  assert.equal(timers.length, 1);
+});
+
 test("panel response parser never exposes response bodies", async () => {
   const { context } = loadPanel();
   const cases = [

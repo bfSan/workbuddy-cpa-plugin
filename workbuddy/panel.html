@@ -153,6 +153,11 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 .modal-bd textarea{width:100%;min-height:160px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--fg);font:12px/1.45 ui-monospace,monospace;resize:vertical;outline:none}
 .modal-bd textarea:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
 .modal-bd textarea::placeholder{color:var(--placeholder)}
+.oauth-status{padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);line-height:1.55}
+.oauth-status.ok{border-color:var(--ok-border);background:var(--ok-soft);color:var(--ok)}
+.oauth-status.err{border-color:var(--err-border);background:var(--err-soft);color:var(--err)}
+.oauth-url-row{display:flex;gap:8px;margin:12px 0}
+.oauth-url-row .field-input{min-width:0;font:11px/1.4 ui-monospace,monospace}
 .modal-ft{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border);background:var(--surface);border-radius:0 0 var(--radius-lg) var(--radius-lg)}
 .modal-ft button.sec{background:var(--btn-sec);color:var(--fg)}
 .modal-ft button.sec:hover{background:var(--btn-sec-hover)}
@@ -215,6 +220,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     </div>
   </div>
   <div class="bar">
+    <button class="sec" id="oauthLoginBtn" onclick="openOAuthLogin(this)">OAuth 登录</button>
     <button class="sec" id="importBtn" onclick="openImportModal()">导入凭证</button>
     <button class="sec" onclick="openDesensitizeModal()">屏蔽词设置</button>
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
@@ -246,6 +252,27 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     </div>
   </div>
   <footer class="footer">当前出口 IP：<strong id="egressIp" role="status">检测中…</strong></footer>
+</div>
+<div class="modal-mask" id="oauthModal" onclick="onOAuthMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="oauthModalTitle">
+    <div class="modal-hd">
+      <h2 id="oauthModalTitle">OAuth 登录 WorkBuddy</h2>
+      <button type="button" class="modal-x" onclick="closeOAuthModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <div class="oauth-status" id="oauthStatus" role="status" aria-live="polite">正在创建登录会话…</div>
+      <div class="oauth-url-row">
+        <input id="oauthUrl" class="field-input" type="text" readonly aria-label="OAuth 登录地址">
+        <button type="button" class="sec" onclick="copyOAuthURL(this)">复制</button>
+      </div>
+      <p class="hint">请在浏览器中完成登录。本页会自动轮询，成功后账号将直接写入 CPA。</p>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="restartOAuthLogin(this)">重新获取</button>
+      <button type="button" class="sec" onclick="closeOAuthModal()">关闭</button>
+      <button type="button" id="oauthOpenBtn" onclick="openOAuthURL()">打开登录页</button>
+    </div>
+  </div>
 </div>
 <div class="modal-mask" id="importModal" onclick="onImportMaskClick(event)">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
@@ -1230,10 +1257,129 @@ async function importAuth(btn){
     if(ok) await load(true)
   }finally{busy(btn,false)}
 }
+let oauthState="";
+let oauthURL="";
+let oauthDeadline=0;
+let oauthPollTimer=null;
+let oauthPollGeneration=0;
+
+function oauthStatusText(text,kind){
+  const el=document.getElementById("oauthStatus");
+  el.textContent=text;
+  el.className="oauth-status"+(kind?" "+kind:"");
+}
+function stopOAuthPolling(){
+  oauthPollGeneration++;
+  if(oauthPollTimer){
+    clearTimeout(oauthPollTimer);
+    oauthPollTimer=null;
+  }
+}
+function closeOAuthModal(){
+  stopOAuthPolling();
+  document.getElementById("oauthModal").classList.remove("show");
+}
+function onOAuthMaskClick(e){
+  if(e.target===document.getElementById("oauthModal")) closeOAuthModal();
+}
+function openOAuthURL(){
+  if(!oauthURL)return;
+  try{window.open(oauthURL,"_blank","noopener,noreferrer")}catch(_){}
+}
+async function copyOAuthURL(btn){
+  if(!oauthURL)return;
+  busy(btn,true);
+  try{
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(oauthURL);
+    }else{
+      const input=document.getElementById("oauthUrl");
+      input.focus();
+      input.select();
+      if(!document.execCommand||!document.execCommand("copy"))throw new Error("copy unsupported");
+    }
+    toast("登录链接已复制","ok");
+  }catch(_){
+    const input=document.getElementById("oauthUrl");
+    input.focus();
+    input.select();
+    toast("请手动复制登录链接","warn");
+  }finally{
+    busy(btn,false);
+  }
+}
+function scheduleOAuthPoll(generation){
+  oauthPollTimer=setTimeout(()=>pollOAuthLogin(generation),1500);
+}
+async function pollOAuthLogin(generation){
+  if(generation!==oauthPollGeneration)return;
+  if(Date.now()>=oauthDeadline){
+    oauthStatusText("登录会话已过期，请重新获取登录链接。","err");
+    stopOAuthPolling();
+    return;
+  }
+  try{
+    const d=await api("/oauth/poll",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({state:oauthState})});
+    if(generation!==oauthPollGeneration)return;
+    if(d.success){
+      const who=d.nickname?"：" + d.nickname:"";
+      oauthStatusText("登录成功"+who+"。账号已写入 CPA。","ok");
+      stopOAuthPolling();
+      toast("OAuth 登录成功","ok",d.nickname||"WorkBuddy 账号已添加");
+      await load(true);
+      return;
+    }
+    if(d.done){
+      oauthStatusText(d.message||"登录失败，请重新获取登录链接。","err");
+      stopOAuthPolling();
+      return;
+    }
+    const left=Math.max(0,Math.ceil((oauthDeadline-Date.now())/1000));
+    oauthStatusText("等待浏览器完成登录…（剩余 "+left+" 秒）");
+    scheduleOAuthPoll(generation);
+  }catch(e){
+    if(generation!==oauthPollGeneration)return;
+    oauthStatusText("登录状态查询失败：" + String(e&&e.message||e),"err");
+    scheduleOAuthPoll(generation);
+  }
+}
+async function startOAuthLogin(btn){
+  stopOAuthPolling();
+  oauthState="";
+  oauthURL="";
+  oauthDeadline=0;
+  document.getElementById("oauthUrl").value="";
+  oauthStatusText("正在创建登录会话…");
+  document.getElementById("oauthModal").classList.add("show");
+  busy(btn,true);
+  try{
+    const d=await api("/oauth/start",{method:"POST"});
+    if(!d.success||!d.url||!d.state)throw new Error(d.error||"登录会话创建失败");
+    oauthState=d.state;
+    oauthURL=d.url;
+    const seconds=Math.max(1,Number(d.expiresIn)||300);
+    oauthDeadline=Date.now()+seconds*1000;
+    document.getElementById("oauthUrl").value=d.url;
+    oauthStatusText("请在浏览器完成登录，本页会自动检测。");
+    openOAuthURL();
+    scheduleOAuthPoll(oauthPollGeneration);
+  }catch(e){
+    oauthStatusText(String(e&&e.message||e),"err");
+  }finally{
+    busy(btn,false);
+  }
+}
+function openOAuthLogin(btn){
+  return startOAuthLogin(btn);
+}
+function restartOAuthLogin(btn){
+  return startOAuthLogin(btn);
+}
 document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
 document.addEventListener("keydown",e=>{
   if(e.key=="Escape"&&document.getElementById("importModal").classList.contains("show")) closeImportModal();
   if(e.key=="Escape"&&document.getElementById("desensitizeModal").classList.contains("show")) closeDesensitizeModal();
+  if(e.key=="Escape"&&document.getElementById("oauthModal").classList.contains("show")) closeOAuthModal();
 });
 /* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
 if(window.__wbThemeSync)window.__wbThemeSync();

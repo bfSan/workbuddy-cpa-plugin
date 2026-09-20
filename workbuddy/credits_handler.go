@@ -204,6 +204,10 @@ func handleCreditsQueryWithCallback(req pluginapi.ManagementRequest, callbackID 
 				}
 				// Also fetch plan so the badge updates on lazy load.
 				acct["plan"] = fetchPaymentTypeWithCallback(sa, callbackID)
+				// Keep the auth-file note (what CPA's auth panel shows) in sync
+				// with the freshly fetched credits. Without this the card kept
+				// rendering "积分未知" even though /credits had the numbers.
+				_ = syncAuthNote(f.AuthIndex, f.ID, sa, cr, f.Disabled)
 				// Update cache so subsequent dashboard loads see fresh data.
 				now := time.Now()
 				if cr != nil {

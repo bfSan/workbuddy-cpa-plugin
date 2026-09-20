@@ -7,6 +7,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +22,19 @@ import (
 const userResourceConcurrency = 4
 
 var userResourceSlots = make(chan struct{}, userResourceConcurrency)
+
+// billingUserAgent identifies the desktop client on billing calls. The billing
+// backend 403s requests that do not look like the official client.
+const billingUserAgent = "WorkBuddy/5.5.6"
+
+// deriveBillingID produces a deterministic per-UID identifier for the
+// X-Machine-ID / X-Session-ID headers. The upstream only checks that the
+// values are stable and present, so a keyed hash is sufficient and avoids
+// sending any real device identifier.
+func deriveBillingID(uid, kind string) string {
+	sum := sha256.Sum256([]byte("workbuddy-cpa:" + kind + ":" + uid))
+	return hex.EncodeToString(sum[:16])
+}
 
 func acquireUserResourceSlot() func() {
 	userResourceSlots <- struct{}{}
@@ -74,18 +89,41 @@ func billingBaseFor(sa *storedAuth) string {
 
 func billingHeaders(req *http.Request, sa *storedAuth) {
 	req.Header.Set("Authorization", "Bearer "+sa.Auth.AccessToken)
-	req.Header.Set("Accept", "application/json")
+	// The billing backend rejects a bare Bearer request with 403
+	// {"code":10085,"msg":"请求不合法"} — it also requires the client-shaped
+	// header set (X-CodeBuddy-Request / X-Requested-With / Origin / Referer /
+	// User-Agent). Verified live against www.codebuddy.cn on 2026-09-20:
+	// missing headers → 403, full header set → 200 with the credit packages.
+	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("X-CodeBuddy-Request", "1")
+	req.Header.Set("User-Agent", billingUserAgent)
+	if sa != nil && isGlobalDomain(sa.Auth.Domain) {
+		req.Header.Set("Origin", originRefererGlobal)
+		req.Header.Set("Referer", originRefererGlobal+"/")
+		req.Header.Set("Accept-Language", "en-US")
+	} else {
+		req.Header.Set("Origin", originReferer)
+		req.Header.Set("Referer", originReferer+"/")
+		req.Header.Set("Accept-Language", "zh-CN")
+		req.Header.Set("X-Product", "SaaS")
+	}
 	if sa.Account.UID != "" {
 		req.Header.Set("X-User-Id", sa.Account.UID)
+		req.Header.Set("X-Machine-ID", deriveBillingID(sa.Account.UID, "machine"))
+		req.Header.Set("X-Session-ID", deriveBillingID(sa.Account.UID, "session"))
 	}
 	if sa.Account.EnterpriseID != "" {
 		req.Header.Set("X-Enterprise-Id", sa.Account.EnterpriseID)
 		req.Header.Set("X-Tenant-Id", sa.Account.EnterpriseID)
+	} else {
+		req.Header.Set("X-No-Enterprise-Id", "1")
 	}
 	if sa.Auth.Domain != "" {
 		req.Header.Set("X-Domain", sa.Auth.Domain)
 	}
+	req.Header.Set("X-Request-ID", randomHex(16))
 }
 
 func billingCall(sa *storedAuth, path string, body any) (json.RawMessage, error) {

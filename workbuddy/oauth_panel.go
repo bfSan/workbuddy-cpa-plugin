@@ -24,7 +24,7 @@ import (
 // open. The state token is what the panel polls with; it is single-use and
 // expires with the flow.
 func handleOAuthStart() map[string]any {
-	raw, err := handleStartLogin(nil)
+	raw, err := startLoginWithMode(oauthClientModeWorkBuddy)
 	if err != nil {
 		return map[string]any{"success": false, "error": err.Error()}
 	}

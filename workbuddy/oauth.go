@@ -216,13 +216,20 @@ func decorateDesktopAuthURL(rawURL, loginSessionID string) (string, error) {
 }
 
 func handleStartLogin(raw []byte) ([]byte, error) {
-	client, err := newLoginClient()
-	if err != nil {
-		return nil, fmt.Errorf("auth state failed: %w", err)
-	}
 	mode := oauthClientModeCLI
 	if features := currentFeatureRuntime(); features != nil {
 		mode = features.oauthClientMode
+	}
+	return startLoginWithMode(mode)
+}
+
+// startLoginWithMode starts a login flow with an explicit client profile. The
+// embedded panel always uses the WorkBuddy desktop profile, even when the host
+// native auth flow is configured for CLI.
+func startLoginWithMode(mode string) ([]byte, error) {
+	client, err := newLoginClient()
+	if err != nil {
+		return nil, fmt.Errorf("auth state failed: %w", err)
 	}
 	profile := oauthProfileForMode(mode)
 	stateReq, err := buildAuthStateRequest(profile)

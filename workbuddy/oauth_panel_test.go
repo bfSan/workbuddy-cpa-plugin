@@ -3,11 +3,80 @@ package main
 import (
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
+
+func TestHandleOAuthStart_UsesWorkBuddyDesktopProfile(t *testing.T) {
+	oldFeatures := featureRuntime.Load()
+	cli, err := parseFeatureRuntime([]byte("oauth_client_mode: cli\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(cli)
+	t.Cleanup(func() { featureRuntime.Store(oldFeatures) })
+
+	oldProxy := currentProxyState()
+	proxyState.Store(&proxyRoutingState{mode: proxyModeInherit})
+	t.Cleanup(func() { proxyState.Store(oldProxy) })
+
+	oldClient := sharedHTTPClient()
+	var request *http.Request
+	sharedClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		request = req.Clone(req.Context())
+		return testHTTPResponse(req, `{"code":0,"data":{"state":"panel-login-state","authUrl":"https://www.workbuddy.cn/login?platform=workbuddy&state=panel-login-state"}}`), nil
+	})}
+	t.Cleanup(func() { sharedClient = oldClient })
+
+	res := handleOAuthStart()
+	if ok, _ := res["success"].(bool); !ok {
+		t.Fatalf("handleOAuthStart failed: %+v", res)
+	}
+	if request == nil {
+		t.Fatal("OAuth start sent no upstream request")
+	}
+	if request.URL.String() != upstreamBaseCN+"/v2/plugin/auth/state?platform=workbuddy" {
+		t.Fatalf("state request URL = %q", request.URL.String())
+	}
+	if got := request.Header.Get("User-Agent"); got != workBuddyDesktopUA {
+		t.Fatalf("User-Agent = %q, want %q", got, workBuddyDesktopUA)
+	}
+
+	rawURL, _ := res["url"].(string)
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Host != "www.workbuddy.cn" || u.Path != "/login" {
+		t.Fatalf("login URL = %q", rawURL)
+	}
+	if got := u.Query().Get("platform"); got != oauthClientModeWorkBuddy {
+		t.Fatalf("platform = %q, want workbuddy", got)
+	}
+	if got := u.Query().Get("version"); got != "5.3.14" {
+		t.Fatalf("version = %q, want 5.3.14", got)
+	}
+	if got := u.Query().Get("loginSessionId"); !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(got) {
+		t.Fatalf("loginSessionId = %q, want 32 lowercase hex characters", got)
+	}
+
+	state, _ := res["state"].(string)
+	stored, ok := loginStates.Load(state)
+	if !ok {
+		t.Fatal("login state was not stored")
+	}
+	lc := stored.(*loginCtx)
+	if lc.profile.mode != oauthClientModeWorkBuddy {
+		t.Fatalf("login profile = %q, want %q", lc.profile.mode, oauthClientModeWorkBuddy)
+	}
+	if lc.loginSessionID != u.Query().Get("loginSessionId") {
+		t.Fatalf("stored loginSessionId = %q, URL has %q", lc.loginSessionID, u.Query().Get("loginSessionId"))
+	}
+	t.Cleanup(func() { loginStates.Delete(state) })
+}
 
 // handleStartLogin reaches the upstream auth-state endpoint, so its outcome
 // depends on the network a unit test must not assume. What matters here is

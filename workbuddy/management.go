@@ -324,6 +324,9 @@ func handleAccountRename(req pluginapi.ManagementRequest) map[string]any {
 	if err := hostAuthSaveJSONFn(strings.TrimSpace(phys.Name), raw); err != nil {
 		return map[string]any{"error": err.Error()}
 	}
+	if err := waitForRuntimeAuthLabel(authIndex, labelForAuth(sa), 3*time.Second); err != nil {
+		return map[string]any{"status": "ok", "auth_index": authIndex, "name": sa.Account.Nickname, "warning": err.Error()}
+	}
 	return map[string]any{"status": "ok", "auth_index": authIndex, "name": sa.Account.Nickname}
 }
 

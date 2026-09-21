@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -206,6 +207,29 @@ func TestAccountRenameSyncsHostLabel(t *testing.T) {
 	}
 	if !strings.Contains(parsed.Label, "新名字") {
 		t.Fatalf("label = %q, want renamed account", parsed.Label)
+	}
+}
+
+func TestWaitForRuntimeAuthLabelWaitsForReparse(t *testing.T) {
+	oldRuntime := runtimeAuthLabelFn
+	reads := 0
+	runtimeAuthLabelFn = func(authIndex string) (string, error) {
+		if authIndex != "idx-rename" {
+			t.Fatalf("auth index = %q", authIndex)
+		}
+		reads++
+		if reads < 3 {
+			return "workbuddy", nil
+		}
+		return "新名字 [CN]", nil
+	}
+	t.Cleanup(func() { runtimeAuthLabelFn = oldRuntime })
+
+	if err := waitForRuntimeAuthLabel("idx-rename", "新名字 [CN]", time.Second); err != nil {
+		t.Fatalf("waitForRuntimeAuthLabel: %v", err)
+	}
+	if reads < 3 {
+		t.Fatalf("runtime label reads = %d, want at least 3", reads)
 	}
 }
 

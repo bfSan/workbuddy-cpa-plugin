@@ -155,9 +155,57 @@ func TestBuildAuthFileJSON_ContainsDisabledAndNote(t *testing.T) {
 	if m["logo"] == nil || m["logo"] == "" {
 		t.Fatal("logo missing")
 	}
+	if m["label"] != labelForAuth(sa) {
+		t.Fatalf("label=%v, want %q", m["label"], labelForAuth(sa))
+	}
 	auth, _ := m["auth"].(map[string]any)
 	if auth == nil || auth["accessToken"] != "at" {
 		t.Fatalf("auth tokens lost: %v", m["auth"])
+	}
+}
+
+func TestAccountRenameSyncsHostLabel(t *testing.T) {
+	oldGet := hostAuthGetPhysicalFn
+	oldSave := hostAuthSaveJSONFn
+	var saved []byte
+	hostAuthGetPhysicalFn = func(authIndex string) (*hostAuthPhysical, error) {
+		raw, _ := json.Marshal(map[string]any{
+			"type":    providerName,
+			"account": map[string]any{"uid": "uid-rename", "nickname": "old"},
+			"auth":    map[string]any{"accessToken": "tok", "domain": "www.codebuddy.cn"},
+			"note":    "CN · 余1 已用2",
+		})
+		return &hostAuthPhysical{AuthIndex: authIndex, Name: "workbuddy-uid-rename.json", JSON: raw}, nil
+	}
+	hostAuthSaveJSONFn = func(name string, raw []byte) error {
+		saved = append([]byte(nil), raw...)
+		return nil
+	}
+	t.Cleanup(func() {
+		hostAuthGetPhysicalFn = oldGet
+		hostAuthSaveJSONFn = oldSave
+	})
+
+	resp := handleAccountRename(pluginapi.ManagementRequest{
+		Body: []byte(`{"auth_index":"idx-rename","name":"新名字"}`),
+	})
+	if errValue, ok := resp["error"]; ok {
+		t.Fatalf("rename error: %v", errValue)
+	}
+	var parsed struct {
+		Label   string `json:"label"`
+		Account struct {
+			Nickname string `json:"nickname"`
+		} `json:"account"`
+	}
+	if err := json.Unmarshal(saved, &parsed); err != nil {
+		t.Fatalf("unmarshal saved auth: %v", err)
+	}
+	if parsed.Account.Nickname != "新名字" {
+		t.Fatalf("nickname = %q", parsed.Account.Nickname)
+	}
+	if !strings.Contains(parsed.Label, "新名字") {
+		t.Fatalf("label = %q, want renamed account", parsed.Label)
 	}
 }
 

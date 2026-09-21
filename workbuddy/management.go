@@ -307,7 +307,7 @@ func handleAccountRename(req pluginapi.ManagementRequest) map[string]any {
 	if authIndex == "" {
 		return map[string]any{"error": "auth_index is required"}
 	}
-	phys, err := hostAuthGetPhysical(authIndex)
+	phys, err := hostAuthGetPhysicalFn(authIndex)
 	if err != nil || phys == nil {
 		return map[string]any{"error": "account not found"}
 	}
@@ -321,7 +321,7 @@ func handleAccountRename(req pluginapi.ManagementRequest) map[string]any {
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	if err := hostAuthSaveJSON(strings.TrimSpace(phys.Name), raw); err != nil {
+	if err := hostAuthSaveJSONFn(strings.TrimSpace(phys.Name), raw); err != nil {
 		return map[string]any{"error": err.Error()}
 	}
 	return map[string]any{"status": "ok", "auth_index": authIndex, "name": sa.Account.Nickname}
@@ -345,7 +345,7 @@ func handleAccountDelete(req pluginapi.ManagementRequest) map[string]any {
 	if authIndex == "" {
 		return map[string]any{"error": "auth_index is required"}
 	}
-	phys, err := hostAuthGetPhysical(authIndex)
+	phys, err := hostAuthGetPhysicalFn(authIndex)
 	if err != nil || phys == nil {
 		return map[string]any{"error": "account not found"}
 	}

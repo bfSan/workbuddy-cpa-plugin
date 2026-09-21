@@ -97,6 +97,10 @@ type hostAuthPhysical struct {
 	Disabled  bool
 }
 
+// hostAuthGetPhysicalFn lets tests substitute the host RPC without changing the
+// production path used by lifecycle and management handlers.
+var hostAuthGetPhysicalFn = hostAuthGetPhysical
+
 func hostAuthGetPhysical(authIndex string) (*hostAuthPhysical, error) {
 	body, _ := json.Marshal(map[string]string{"auth_index": authIndex})
 	raw, err := hostCall(pluginabi.MethodHostAuthGet, body)
@@ -122,6 +126,9 @@ func hostAuthGetPhysical(authIndex string) (*hostAuthPhysical, error) {
 
 // hostAuthSaveJSON persists credential JSON via host.auth.save.
 
+var hostAuthPersistMigrateFn = hostAuthPersistMigrate
+var hostAuthPersistFn = hostAuthPersist
+
 func hostAuthPersist(name, path string, raw []byte) error {
 	_ = path // reserved for callers that still pass physical path for migrate logic
 	name = strings.TrimSpace(name)
@@ -135,7 +142,7 @@ func hostAuthPersist(name, path string, raw []byte) error {
 // when the canonical name differs (workbuddy.json → workbuddy-<uid>.json).
 
 func hostAuthPersistMigrate(name, path, legacyPath string, raw []byte) error {
-	if err := hostAuthPersist(name, path, raw); err != nil {
+	if err := hostAuthPersistFn(name, path, raw); err != nil {
 		return err
 	}
 	// If path was legacy and name is canonical, also write canonical path next to it.
@@ -152,6 +159,8 @@ func hostAuthPersistMigrate(name, path, legacyPath string, raw []byte) error {
 
 // buildAuthFileJSON produces host-save payload: nested storage + top-level metadata.
 // extra merges additional top-level keys (optional).
+
+var hostAuthSaveJSONFn = hostAuthSaveJSON
 
 func hostAuthSaveJSON(name string, raw []byte) error {
 	name = strings.TrimSpace(name)
@@ -197,6 +206,7 @@ func buildAuthFileJSON(sa *storedAuth, disabled bool, note string, extra map[str
 		"provider": providerName,
 		"logo":     pluginLogoURL,
 		"disabled": disabled,
+		"label":    labelForAuth(sa),
 		"note":     note,
 		"auth":     nested["auth"],
 		"account":  nested["account"],

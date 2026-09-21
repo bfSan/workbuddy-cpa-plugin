@@ -108,6 +108,21 @@ function fakeResponse(status, contentType, body) {
   };
 }
 
+test("panel shell follows the shared responsive plugin layout", () => {
+  const html = fs.readFileSync(path.join(__dirname, "panel.html"), "utf8");
+  for (const rule of [
+    "html,body{max-width:100%;overflow-x:hidden}",
+    ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:14px}",
+    ".card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center;gap:8px}",
+    ".actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}",
+    "@media (max-width:640px)",
+    ".wrap{padding:18px 12px}",
+    ".filter-bar .field-input{flex:1 1 100%;width:100%}",
+  ]) {
+    assert.ok(html.includes(rule), `missing shared panel rule: ${rule}`);
+  }
+});
+
 test("query key replaces session key once and is removed from URL", () => {
   let replaced = "";
   let localWrites = 0;
@@ -689,4 +704,46 @@ test("renderModels keeps hidden models visible and offers restore", async () => 
   await panel.context.restoreModel("hidden-one");
   assert.equal(path, "/models/action");
   assert.deepEqual(body, { action: "restore", id: "hidden-one" });
+});
+
+test("hiding a model keeps the catalog visible while CPA reloads plugin config", async () => {
+  const panel = loadPanel();
+  let modelReads = 0;
+  panel.context.api = async (path, options) => {
+    if (path === "/models/action") {
+      assert.deepEqual(JSON.parse(options.body), { action: "hide", id: "model-a" });
+      return { overlay: { hide: ["model-a"] } };
+    }
+    if (path === "/models") {
+      modelReads += 1;
+      if (modelReads === 1) {
+        return {
+          models: [{ id: "model-a", name: "Model A", hidden: false, kind: "chat", credits: {} }],
+          source: "fresh",
+        };
+      }
+      if (modelReads === 2) {
+        return { models: [], source: "none" };
+      }
+      return {
+        models: [{ id: "model-a", name: "Model A", hidden: true, kind: "chat", credits: {} }],
+        source: "fresh",
+      };
+    }
+    throw new Error("unexpected API path " + path);
+  };
+  panel.context.managementAPI = async (path, options) => {
+    assert.equal(path, "/plugins/workbuddy/config");
+    assert.deepEqual(JSON.parse(options.body), { hidden_models: ["model-a"] });
+    return { success: true };
+  };
+
+  await panel.context.loadModels(false);
+  await panel.context.toggleModel("model-a");
+
+  const html = panel.elements.get("modelList").innerHTML;
+  assert.match(html, /model-a/);
+  assert.match(html, /已隐藏/);
+  assert.doesNotMatch(html, /暂无模型/);
+  assert.ok(modelReads >= 3, `model catalog reads = ${modelReads}, want a reload retry`);
 });

@@ -145,6 +145,52 @@ func TestEmptyStreamErrorIsConnectionLifecycle(t *testing.T) {
 	}
 }
 
+// TestAuthParseKeepsKnownCredits pins the reload regression: CPA rebuilds the
+// in-memory auth metadata from AuthParse on every restart/reload, so parsing
+// must reuse the note already stored in the file rather than emitting the
+// cr==nil placeholder.
+func TestAuthParseKeepsKnownCredits(t *testing.T) {
+	fileJSON, err := json.Marshal(map[string]any{
+		"type":    providerName,
+		"note":    "CN · 余940 已用3079 池4019",
+		"account": map[string]any{"uid": "uid-parse-wb", "nickname": "tester"},
+		"auth":    map[string]any{"accessToken": "tok"},
+	})
+	if err != nil {
+		t.Fatalf("marshal file: %v", err)
+	}
+	req, err := json.Marshal(pluginapi.AuthParseRequest{
+		Provider: providerName,
+		FileName: "workbuddy-uid-parse-wb.json",
+		RawJSON:  fileJSON,
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	body, err := handleParseAuth(req)
+	if err != nil {
+		t.Fatalf("handleParseAuth: %v", err)
+	}
+	var env struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Handled bool `json:"handled"`
+			Auth    struct {
+				Metadata map[string]any `json:"metadata"`
+			} `json:"auth"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if !env.OK || !env.Result.Handled {
+		t.Fatalf("parse not handled: %s", body)
+	}
+	if got, _ := env.Result.Auth.Metadata["note"].(string); got != "CN · 余940 已用3079 池4019" {
+		t.Fatalf("note = %q, want the stored credit segment", got)
+	}
+}
+
 type readErrorAfterData struct {
 	data []byte
 	err  error

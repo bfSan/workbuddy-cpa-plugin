@@ -637,7 +637,11 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 	// By leaving ID empty, CPA falls back to authIDForPath(path) which
 	// derives ID from the file path → always matches the watcher's key.
 	// FileName is also echoed back to avoid rename-based duplicates.
-	ad := toAuthDataOpts(sa, nil, false)
+	// Preserve the credit segment already stored in the file. CPA rebuilds the
+	// in-memory auth metadata from this parse result on every reload/restart, so
+	// emitting the cr==nil placeholder here would replace a known "余N 已用N"
+	// note with "积分未知" in the management API.
+	ad := toAuthDataOptsWithNote(sa, nil, false, noteCreditsFromJSON(req.RawJSON))
 	ad.ID = "" // let host compute from path (prevents ID mismatch dupes)
 	if fn := strings.TrimSpace(req.FileName); fn != "" {
 		ad.FileName = fn
@@ -654,6 +658,12 @@ func toAuthData(sa *storedAuth) pluginapi.AuthData {
 
 // toAuthDataOpts builds AuthData with optional credits snapshot and disabled flag.
 func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi.AuthData {
+	return toAuthDataOptsWithNote(sa, cr, disabled, "")
+}
+
+// toAuthDataOptsWithNote is toAuthDataOpts plus a previously known credit
+// segment, used by AuthParse so a reload cannot regress a live note.
+func toAuthDataOptsWithNote(sa *storedAuth, cr *creditsSummary, disabled bool, prevCredits string) pluginapi.AuthData {
 	storage, _ := json.Marshal(sa)
 	id := providerName
 	fileName := authFileName
@@ -664,7 +674,7 @@ func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi
 		}
 	}
 	label := labelForAuth(sa)
-	meta := enrichAuthMetadata(sa, cr, disabled)
+	meta := enrichAuthMetadataWithPrev(sa, cr, disabled, prevCredits)
 	return pluginapi.AuthData{
 		Provider:    providerName,
 		ID:          id,

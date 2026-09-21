@@ -237,11 +237,25 @@ func applyExhaustedPolicy(authIndex, authID string, sa *storedAuth, cr *creditsS
 }
 
 // syncAuthNote writes note without changing disabled state.
+// existingNoteCredits reads the credit segment already stored on disk so a
+// failed credits query keeps the last known value instead of regressing the
+// card to "积分未知".
+func existingNoteCredits(authIndex string) string {
+	phys, err := hostAuthGetPhysical(authIndex)
+	if err != nil || phys == nil {
+		return ""
+	}
+	return noteCreditsFromJSON(phys.JSON)
+}
+
 func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, disabled bool) error {
 	if sa == nil {
 		return nil
 	}
-	note := displayNote(sa, cr, disabled)
+	// Read the on-disk credit segment first so a nil cr (lazy refresh, restart,
+	// or a failed billing call) keeps the last known value instead of writing
+	// back the "积分未知" placeholder.
+	note := displayNoteWithPrev(sa, cr, disabled, existingNoteCredits(authIndex))
 	if lifecycleStateUnchanged(authID, disabled, note) {
 		return nil
 	}
@@ -256,7 +270,7 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
 		// re-read disabled from disk as source of truth
 		disabled = parseDisabledFromAuthJSON(phys.JSON)
-		note = displayNote(sa, cr, disabled)
+		note = displayNoteWithPrev(sa, cr, disabled, noteCreditsFromJSON(phys.JSON))
 	}
 	if lifecycleStateUnchanged(authID, disabled, note) {
 		return nil
@@ -547,7 +561,13 @@ func listEntryMatchesUID(f pluginapi.HostAuthFileEntry, uid, wantName string) bo
 
 // enrichAuthMetadata builds Metadata map for AuthData (type/logo/note/disabled).
 func enrichAuthMetadata(sa *storedAuth, cr *creditsSummary, disabled bool) map[string]any {
-	note := displayNote(sa, cr, disabled)
+	return enrichAuthMetadataWithPrev(sa, cr, disabled, "")
+}
+
+// enrichAuthMetadataWithPrev is enrichAuthMetadata plus a previously known
+// credit segment, so a reload never degrades a populated card.
+func enrichAuthMetadataWithPrev(sa *storedAuth, cr *creditsSummary, disabled bool, prevCredits string) map[string]any {
+	note := displayNoteWithPrev(sa, cr, disabled, prevCredits)
 	return map[string]any{
 		"type":     providerName,
 		"provider": providerName,

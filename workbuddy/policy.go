@@ -6,6 +6,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -141,7 +142,49 @@ func shouldReenableCN(disabled bool, cr *creditsSummary) bool {
 }
 
 // displayNote builds a one-line note for CPAMP Auth cards.
+//
+// cr == nil means "credits unknown right now" (startup, a lazy panel refresh,
+// or a failed billing call). displayNote cannot read the disk, so it falls back
+// to the placeholder; callers that can see the stored note should prefer
+// displayNoteWithPrev so a reload never regresses a live card.
 func displayNote(sa *storedAuth, cr *creditsSummary, disabled bool) string {
+	return displayNoteWithPrev(sa, cr, disabled, "")
+}
+
+// creditSegmentFromNote extracts the credit segment from an existing auth note,
+// dropping the region / 已禁用 head. Returns "" when the note carries no usable
+// credit information, so callers never resurrect the "积分未知" placeholder.
+func creditSegmentFromNote(note string) string {
+	segments := make([]string, 0, 4)
+	for _, part := range strings.Split(note, " · ") {
+		part = strings.TrimSpace(part)
+		switch part {
+		case "", "CN", "Global", "已禁用":
+			continue
+		}
+		segments = append(segments, part)
+	}
+	seg := strings.Join(segments, " · ")
+	if seg == "" || strings.HasPrefix(seg, "积分未知") {
+		return ""
+	}
+	return seg
+}
+
+// noteCreditsFromJSON extracts the credit segment from a raw auth-file body.
+func noteCreditsFromJSON(raw []byte) string {
+	var doc struct {
+		Note string `json:"note"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return ""
+	}
+	return creditSegmentFromNote(doc.Note)
+}
+
+// displayNoteWithPrev is displayNote plus a previously known credit segment.
+// prev is ignored whenever cr carries fresh data or holds no usable value.
+func displayNoteWithPrev(sa *storedAuth, cr *creditsSummary, disabled bool, prev string) string {
 	region := strings.ToUpper(accountRegion(sa))
 	if region == "CN" {
 		region = "CN"
@@ -154,7 +197,11 @@ func displayNote(sa *storedAuth, cr *creditsSummary, disabled bool) string {
 	}
 	switch {
 	case cr == nil:
-		parts = append(parts, "积分未知")
+		if prev = creditSegmentFromNote(prev); prev != "" {
+			parts = append(parts, prev)
+		} else {
+			parts = append(parts, "积分未知")
+		}
 	case isCreditsExhausted(cr):
 		parts = append(parts, fmt.Sprintf("耗尽 · 余%d 已用%d", cr.TotalRemain, cr.TotalUsed))
 	default:

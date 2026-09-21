@@ -188,6 +188,7 @@ func buildDashboardExWithCallback(force, fetchCredits bool, callbackID string) m
 				}
 			}
 			acct.Nickname = sa.Account.Nickname
+			acct.Label = labelForAuth(sa)
 			acct.UID = sa.Account.UID
 			acct.Region = accountRegion(sa)
 			if fetchCredits {

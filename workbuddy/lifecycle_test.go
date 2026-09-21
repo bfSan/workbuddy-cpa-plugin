@@ -159,9 +159,28 @@ func TestBuildAuthFileJSON_ContainsDisabledAndNote(t *testing.T) {
 	if m["label"] != labelForAuth(sa) {
 		t.Fatalf("label=%v, want %q", m["label"], labelForAuth(sa))
 	}
+	if m["email"] != sa.Account.Nickname {
+		t.Fatalf("email=%v, want nickname %q", m["email"], sa.Account.Nickname)
+	}
+	if got, _ := enrichAuthMetadataWithPrev(sa, nil, true, "")["email"].(string); got != sa.Account.Nickname {
+		t.Fatalf("metadata email=%q, want nickname %q", got, sa.Account.Nickname)
+	}
 	auth, _ := m["auth"].(map[string]any)
 	if auth == nil || auth["accessToken"] != "at" {
 		t.Fatalf("auth tokens lost: %v", m["auth"])
+	}
+}
+
+func TestDisplayEmailForAuthUsesTrimmedNickname(t *testing.T) {
+	sa := &storedAuth{Account: storedAccount{Nickname: "  薄枫  "}}
+	if got := displayEmailForAuth(sa); got != "薄枫" {
+		t.Fatalf("email = %q, want trimmed nickname", got)
+	}
+	if got := displayEmailForAuth(&storedAuth{}); got != "" {
+		t.Fatalf("empty nickname email = %q, want empty", got)
+	}
+	if got := displayEmailForAuth(nil); got != "" {
+		t.Fatalf("nil auth email = %q, want empty", got)
 	}
 }
 

@@ -568,11 +568,27 @@ func enrichAuthMetadata(sa *storedAuth, cr *creditsSummary, disabled bool) map[s
 // credit segment, so a reload never degrades a populated card.
 func enrichAuthMetadataWithPrev(sa *storedAuth, cr *creditsSummary, disabled bool, prevCredits string) map[string]any {
 	note := displayNoteWithPrev(sa, cr, disabled, prevCredits)
-	return map[string]any{
+	meta := map[string]any{
 		"type":     providerName,
 		"provider": providerName,
 		"logo":     pluginLogoURL,
 		"note":     note,
 		"disabled": disabled,
 	}
+	if email := displayEmailForAuth(sa); email != "" {
+		meta["email"] = email
+	}
+	return meta
+}
+
+// displayEmailForAuth maps the WorkBuddy nickname into CPA's email slot.
+//
+// CPA v7.3.7's native auth card chooses its title from email -> project_id ->
+// filename and ignores AuthData.Label. WorkBuddy's current OAuth tokens expose
+// an empty email claim, so the nickname is the usable display identity.
+func displayEmailForAuth(sa *storedAuth) string {
+	if sa == nil {
+		return ""
+	}
+	return strings.TrimSpace(sa.Account.Nickname)
 }

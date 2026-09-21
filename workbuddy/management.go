@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -186,6 +187,8 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/cooldowns/clear", Description: "Clear throttling for one account (auth_id) or one pair (auth_id + model)."},
 			{Method: http.MethodPost, Path: base + "/oauth/start", Description: "Start an OAuth login flow and return the URL to open."},
 			{Method: http.MethodPost, Path: base + "/oauth/poll", Description: "Poll one OAuth login flow (body or query: state)."},
+			{Method: http.MethodPost, Path: base + "/accounts/rename", Description: "Set the display name of one account (body: {auth_index, name})."},
+			{Method: http.MethodPost, Path: base + "/accounts/delete", Description: "Delete one account so it can be re-registered (body: {auth_index})."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "WorkBuddy", Description: "WorkBuddy dashboard: credits, check-in, plan, import."},
@@ -276,8 +279,84 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleOAuthStart()))
 	case req.Method == http.MethodPost && path == base+"/oauth/poll":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleOAuthPoll(req.ManagementRequest)))
+	case req.Method == http.MethodPost && path == base+"/accounts/rename":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleAccountRename(req.ManagementRequest)))
+	case req.Method == http.MethodPost && path == base+"/accounts/delete":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleAccountDelete(req.ManagementRequest)))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
+}
+
+// handleAccountRename sets the display name of one credential.
+//
+// The name lives in account.nickname, which labelForAuth already reads when CPA
+// renders the credential card. It deliberately does not touch the note: that
+// field is rewritten on every credits refresh and would lose a custom label.
+func handleAccountRename(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		AuthIndex string `json:"auth_index"`
+		Name      string `json:"name"`
+	}
+	if len(req.Body) > 0 {
+		_ = json.Unmarshal(req.Body, &body)
+	}
+	authIndex := strings.TrimSpace(body.AuthIndex)
+	if authIndex == "" {
+		authIndex = strings.TrimSpace(req.Query.Get("auth_index"))
+	}
+	if authIndex == "" {
+		return map[string]any{"error": "auth_index is required"}
+	}
+	phys, err := hostAuthGetPhysical(authIndex)
+	if err != nil || phys == nil {
+		return map[string]any{"error": "account not found"}
+	}
+	sa, err := parseStored(phys.JSON)
+	if err != nil || sa == nil {
+		return map[string]any{"error": "stored auth is nil"}
+	}
+	sa.Account.Nickname = strings.TrimSpace(body.Name)
+	note := displayNoteWithPrev(sa, nil, phys.Disabled, existingNoteCredits(authIndex))
+	raw, err := buildAuthFileJSON(sa, phys.Disabled, note, nil)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	if err := hostAuthSaveJSON(strings.TrimSpace(phys.Name), raw); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	return map[string]any{"status": "ok", "auth_index": authIndex, "name": sa.Account.Nickname}
+}
+
+// handleAccountDelete removes one credential so a stuck account can be
+// re-registered with a fresh login. The plugin SDK has no auth.delete method,
+// so this drops the physical file through the same guarded helper the
+// lifecycle migration uses (absolute path, confined to the auth directory).
+func handleAccountDelete(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		AuthIndex string `json:"auth_index"`
+	}
+	if len(req.Body) > 0 {
+		_ = json.Unmarshal(req.Body, &body)
+	}
+	authIndex := strings.TrimSpace(body.AuthIndex)
+	if authIndex == "" {
+		authIndex = strings.TrimSpace(req.Query.Get("auth_index"))
+	}
+	if authIndex == "" {
+		return map[string]any{"error": "auth_index is required"}
+	}
+	phys, err := hostAuthGetPhysical(authIndex)
+	if err != nil || phys == nil {
+		return map[string]any{"error": "account not found"}
+	}
+	path := strings.TrimSpace(phys.Path)
+	if path == "" {
+		return map[string]any{"error": "auth file path unavailable"}
+	}
+	if err := deleteAuthFileInDir(path, filepath.Dir(path)); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	return map[string]any{"status": "ok", "auth_index": authIndex, "file": filepath.Base(path)}
 }
 
 // -----------------------------------------------------------------------------

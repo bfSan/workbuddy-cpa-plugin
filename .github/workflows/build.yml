@@ -345,7 +345,7 @@ jobs:
 
           ### Remote update (custom plugin source)
           \`\`\`
-          https://raw.githubusercontent.com/Sliverkiss/cpa-plugin/main/registry.json
+          https://raw.githubusercontent.com/bfSan/workbuddy-cpa-plugin/main/registry.json
           \`\`\`
           EOF
           )

@@ -7,9 +7,10 @@
 //
 // This file is a clean-room reimplementation reconstructed from the public
 // workbuddy.so binary (symbol table, string constants and RPC shape) published
-// by Sliverkiss. Original credit for the workbuddy plugin goes to Sliverkiss;
-// see https://github.com/Sliverkiss/cpa-plugin. Built with -buildmode=c-shared
-// and exports the cliproxy C ABI entry points.
+// by Sliverkiss. Original credit for the workbuddy plugin goes to Sliverkiss,
+// whose upstream cpa-plugin repository is no longer available; see the Credits
+// section of the repository README for the full lineage. Built with
+// -buildmode=c-shared and exports the cliproxy C ABI entry points.
 package main
 
 /*
@@ -81,6 +82,9 @@ const (
 	providerName  = "workbuddy"
 	authFileName  = "workbuddy.json"
 	pluginLogoURL = "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png"
+	// Repository hosting this fork. The upstream cpa-plugin repo this plugin
+	// descends from was removed, so a stale URL there would 404 in the panel.
+	pluginRepoURL = "https://github.com/bfSan/workbuddy-cpa-plugin"
 	// CN chat/auth gateway (iss = codebuddy.cn realm).
 	upstreamBaseCN = "https://copilot.tencent.com"
 	// Global chat/auth gateway (iss = workbuddy.ai realm). APISIX on
@@ -348,8 +352,8 @@ func wbRegistration() registration {
 		Metadata: pluginapi.Metadata{
 			Name:             providerName,
 			Version:          version,
-			Author:           "Sliverkiss (based on workbuddy by lovingfish)",
-			GitHubRepository: "https://github.com/Sliverkiss/cpa-plugin",
+			Author:           "bfSan (workbuddy originally by Sliverkiss, based on workbuddy by lovingfish)",
+			GitHubRepository: pluginRepoURL,
 			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 09:00 and 21:00 local time for CN accounts (default true)."},

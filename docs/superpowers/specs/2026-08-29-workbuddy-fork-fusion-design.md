@@ -12,7 +12,8 @@
 
 - [luode0320/cpa-workbuddy-plugin](https://github.com/luode0320/cpa-workbuddy-plugin)
 - [AllenReder/cpa-plugin](https://github.com/AllenReder/cpa-plugin)
-- [hijakke/cpa-plugin](https://github.com/hijakke/cpa-plugin)
+- `hijakke/cpa-plugin` — 审计当时可访问，2026-09-29 复核时 GitHub 返回 404（仓库已删除或转私有），
+  仅保留 2026-08-28 的历史快照作参考。
 - [hurleychin/cpa-plugin](https://github.com/hurleychin/cpa-plugin)
 
 四个 fork 中没有发现当前插件尚未实现的新签到 endpoint、活动状态 endpoint 或 trial claim endpoint。当前插件已有 CN `checkin-activity-status` 到 `checkin-status` fallback、每日签到、Global trial、个人资源包分页、生命周期处理、per-account lock、proxy-aware OAuth、redirect 拒绝、严格 account lookup、静态模型、固定 sanitizer 和基础客户端 headers。

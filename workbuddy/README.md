@@ -35,6 +35,9 @@ built-in management dashboard.
 - **Daily check-in** — CN accounts are checked in at 09:00 and 21:00 local
   time (configurable). Manual "check in all" from the panel. Per-account
   mutex prevents duplicate claims from racing browser tabs.
+- **Prompt obscuring** — optional, off by default. Inserts U+200B into a
+  configurable term list wherever those terms appear in prompt and tool
+  metadata. See "Prompt obscuring" below.
 - **Trial claim** — Global accounts can claim the one-time 250-credit expert
   trial pack from the panel.
 - **Dashboard** — embedded panel at `/v0/resource/plugins/workbuddy/panel`
@@ -120,6 +123,15 @@ plugins:
       # proxy failures fail closed and never fall back to CPA or a direct route.
       proxy-url: ""
 
+      # Prompt obscuring (default false). See "Prompt obscuring" below.
+      # Insert U+200B into the configured terms inside system/developer prompt
+      # text and tool title/description fields. Entries must not contain U+200B.
+      desensitize: false
+
+      # Editable literal term list for desensitize. Omit to use the built-in
+      # 85-term list; pass [] for an empty custom list.
+      desensitize_terms: []
+
       # Daily check-in automation for CN accounts (default true).
       # Runs at 09:00 and 21:00 local time.
       checkin_auto: true
@@ -153,6 +165,32 @@ native-plugin host HTTP API has no per-request proxy override, explicit plugin
 proxy traffic is sent by the plugin and does not appear in CPA's request-log.
 The OAuth URL opened by the browser is not fetched by the plugin; the browser
 needs its own network route.
+
+### Prompt obscuring (`desensitize`)
+
+Off by default. When enabled, the plugin inserts U+200B (zero-width space)
+immediately after the first character of each matched term wherever that term
+appears in:
+
+- `system` and `developer` message text
+- `user` message text, but only when it carries a client-injected marker such as
+  `# AGENTS.md instructions`, `<environment_context>` or `<system-reminder>`
+  (ordinary user turns are left untouched)
+- tool `title` and `description` fields
+
+Matching is case-insensitive and literal — terms are `regexp.QuoteMeta`-escaped,
+so a term is never interpreted as a pattern. Longer terms are matched first, and
+the scan repeats until no term matches, so overlapping entries such as
+`Claude Code` and `Code` are both obscured. Re-running the substitution is a
+no-op, because the inserted U+200B breaks the match.
+
+This changes how the text reads to a person or a content filter while leaving
+the rest of the request untouched. It is not a security boundary and does not
+redact anything from CPA's own logs.
+
+`desensitize_terms` replaces the built-in 85-term list wholesale: omit the key to
+keep the defaults, or set `[]` to obscure nothing. Entries containing U+200B are
+rejected at load time. The panel's 屏蔽词设置 dialog edits the same list.
 
 ## Model catalog
 

@@ -22,6 +22,8 @@
   积分错误立即触发 reconcile。
 - **每日签到** — CN 账号每天 09:00 和 21:00 自动签到（可配置）。面板可手动
   全部签到。Per-account 互斥锁防止多浏览器标签并发重复签到。
+- **屏蔽词混淆** — 可选，默认关闭。按可编辑词表在提示词与 tool metadata 中
+  插入 U+200B，详见下文「屏蔽词混淆」。
 - **Trial 领取** — Global 账号可在面板领取一次性 250 积分专家加油包。
 - **积分面板** — 内嵌面板 `/v0/resource/plugins/workbuddy/panel`，含积分
   进度条、套餐徽章、耗尽/禁用标记、CN/Global 筛选、凭证导入。
@@ -101,6 +103,14 @@ plugins:
       # fail closed，不会回退到 CPA 全局代理或直连。
       proxy-url: ""
 
+      # 屏蔽词混淆（默认 false）。详见下文「屏蔽词混淆」。
+      # 在 system/developer 提示词文本和 tool 的 title/description 字段中，
+      # 给命中的词插入 U+200B。词条本身不允许包含 U+200B。
+      desensitize: false
+
+      # 屏蔽词表。省略则使用内置 85 条词表；传 [] 表示空自定义词表。
+      desensitize_terms: []
+
       # CN 账号每日自动签到（默认 true），09:00 和 21:00 本地时间。
       checkin_auto: true
 
@@ -129,6 +139,28 @@ endpoint 探测都会使用该代理。CLIProxyAPI v7.2.30 的 native plugin hos
 API 不支持单次请求覆盖代理，因此显式插件代理由插件自身发送，不会出现在
 CPA request-log 中。浏览器打开的 OAuth URL 不由插件请求，浏览器需要自行具备
 相应网络路径。
+
+### 屏蔽词混淆（`desensitize`）
+
+默认关闭。开启后在以下位置命中的词后面插入 U+200B（零宽空格）：
+
+- `system` 和 `developer` 消息文本
+- `user` 消息文本，但仅当该消息带有客户端注入的标记（如
+  `# AGENTS.md instructions`、`<environment_context>`、`<system-reminder>`
+  ）时处理；普通用户轮次不受影响
+- tool 的 `title` 和 `description` 字段
+
+匹配不区分大小写且按字面量处理——词条会经 `regexp.QuoteMeta` 转义，不会被当作
+正则。较长词条优先匹配，且会重复扫描直到不再命中，因此像 `Claude Code` 与
+`Code` 这类相互重叠的词条都会被混淆。重复执行是幂等的：已插入的 U+200B 会打断
+再次匹配。插入位置是命中词的首字符之后。
+
+这只改变文本对人眼或内容过滤器的呈现，不改动请求的其他部分；它不是安全边界，
+也不会对 CPA 自身日志做任何脱敏。
+
+`desensitize_terms` 会整体替换内置的 85 条词表：省略该键保留默认词表，传 `[]`
+表示什么都不混淆。含 U+200B 的词条会在加载时报错。面板的「屏蔽词设置」对话框
+编辑同一份词表。
 
 ## 模型目录
 

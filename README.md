@@ -12,7 +12,7 @@
 | 项 | 说明 |
 |---|---|
 | OAuth 登录 | 多账号 `workbuddy-<uid>.json`，CN 与 Global 共用同一插件与同一配置块 |
-| 模型目录 | 默认按账号动态发现并缓存；可选 YAML 权威清单覆盖发现；缺失元数据从 models.dev 补全。宿主 alias/exclusion 仍生效，插件另有持久化 `hidden_models` 过滤 |
+| 模型目录 | 默认按账号动态发现并缓存；可选 YAML 权威清单覆盖发现；缺失元数据从 models.dev 补全。面板「刷新」会带 `?refresh=1` 丢弃缓存并重新向上游发现（拉取失败时保留上一次可用目录并明确提示）。宿主 alias/exclusion 仍生效，插件另有持久化 `hidden_models` 过滤 |
 | Executor | OpenAI 兼容 chat completions，流式（真 SSE）与非流式都支持 |
 | 积分生命周期 | CN 账号积分耗尽自动 disable，签到恢复后自动启用；Global 账号耗尽即删除 |
 | 每日签到 | CN 账号本地时间 09:00 / 21:00 自动签到，面板可手动「全部签到」 |
@@ -27,7 +27,7 @@
 从 Release 下载对应平台产物，放进 CPA 的 `plugins` 目录：
 
 ```bash
-unzip workbuddy_0.9.4_linux_amd64.zip
+unzip workbuddy_0.9.5_linux_amd64.zip
 cp workbuddy.so /path/to/cliproxyapi/plugins/workbuddy.so
 # 或平台子目录布局：plugins/linux/amd64/workbuddy.so
 ```

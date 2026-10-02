@@ -253,7 +253,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   <div class="card" id="modelBox" style="margin-top:16px">
     <h2>模型列表 <span style="display:flex;gap:6px;align-items:center">
       <span class="badge" id="modelSource" title="当前模型目录的来源">—</span>
-      <button type="button" class="ftag" onclick="loadModels(true)">刷新</button>
+      <button type="button" class="ftag" onclick="refreshModels(this)">刷新</button>
     </span></h2>
     <p class="mut" id="modelHint" style="margin:6px 0 10px;font-size:12px"></p>
     <div id="modelList"><div class="loading">加载中…</div></div>
@@ -812,12 +812,40 @@ async function clearCooldown(idx, model, btn){
 const MODEL_SOURCE_LABEL={config:"配置覆盖",fresh:"上游实时",cache:"缓存",none:"未知"};
 let lastModels=[];
 
-async function loadModels(toast,preserveOnEmpty){
+// The forced read is the refresh button's whole purpose: without ?refresh=1 the
+// handler only re-unions snapshots captured when each account was first seen, so
+// pressing refresh showed a stale list.
+async function fetchModels(refresh){
+  if(!refresh) return await api("/models");
+  try{
+    const d=await api("/models?refresh=1");
+    if(d&&d.refresh_error) d.refresh_failed=true;
+    return d;
+  }catch(e){
+    // A forced refresh fans out to every account, so a timeout here does not
+    // mean the cached list is unusable — surface the failure and keep showing
+    // what we already have.
+    if(lastModels.length>0){toast("刷新失败：仍显示缓存列表","err",String(e&&e.message||e));return null}
+    throw e;
+  }
+}
+
+async function refreshModels(btn){
+  busy(btn,true);
+  try{
+    await loadModels(true,true,true);
+  }finally{
+    busy(btn,false);
+  }
+}
+
+async function loadModels(toast,preserveOnEmpty,refresh){
   const box=document.getElementById("modelList");
   const srcEl=document.getElementById("modelSource");
   const hintEl=document.getElementById("modelHint");
   try{
-    const d=await api("/models");
+    const d=await fetchModels(refresh);
+    if(d===null) return false;
     const nextModels=Array.isArray(d.models)?d.models:[];
     if(preserveOnEmpty&&nextModels.length===0&&lastModels.length>0){
       hintEl.textContent=`配置已保存，模型目录正在重载 · 暂时保留 ${lastModels.length} 个模型`;
@@ -825,9 +853,17 @@ async function loadModels(toast,preserveOnEmpty){
       return false;
     }
     lastModels=nextModels;
-    const src=d.source||"none";
+    // A failed forced refresh serves the cached catalog, so the badge must not
+    // keep claiming "上游实时" — that is exactly the misreport this refresh path
+    // exists to remove.
+    const src=(d&&d.refresh_failed)?"cache":(d.source||"none");
     srcEl.textContent=MODEL_SOURCE_LABEL[src]||src;
+    if(refresh){
+      if(d.refresh_failed) toast("上游刷新失败，显示缓存列表","err",String(d.refresh_error||""));
+      else toast("模型列表已从上游刷新","ok",`共 ${lastModels.length} 个模型`);
+    }
     const parts=[`共 ${lastModels.length} 个模型`];
+    if(d&&d.refresh_failed) parts.push("上游刷新失败，当前为缓存列表");
     if(Array.isArray(d.configuredModels)&&d.configuredModels.length){
       parts.push("YAML models 已配置为完整目录");
     }

@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -687,6 +688,95 @@ func (r *modelRuntime) commitFeatureRuntime(next *featureRuntimeConfig) uint64 {
 	generation := r.configGeneration.Add(1)
 	r.configCommitMu.Unlock()
 	return generation
+}
+
+// invalidateModelCaches forces the next discovery for every auth to go back
+// upstream instead of replaying the in-memory snapshot or the on-disk catalog
+// cache.
+//
+// The panel's refresh button is the whole point: without this, a GET
+// /plugins/workbuddy/models only re-reads snapshots that were cached when the
+// account was first seen, so pressing refresh showed the same list no matter
+// what upstream had published.
+//
+// Bumping the config generation retires every per-auth snapshot (each slot
+// compares its stored config generation and reports not_started on mismatch),
+// and dropping the shared results makes the follow-up read re-fetch the
+// models.dev metadata and each account's WorkBuddy catalog.
+func (r *modelRuntime) invalidateModelCaches() {
+	r.metadataMu.Lock()
+	r.metadataResult = nil
+	r.metadataCall = nil
+	r.metadataMu.Unlock()
+	r.advanceConfigGeneration()
+}
+
+// refreshModelCatalogForAuth re-discovers one account's catalog from upstream.
+// It is the model-level equivalent of the dashboard refresh: the same work the
+// host's model.for_auth would trigger, but with the caches already dropped.
+//
+// previous is the snapshot captured before invalidation. The second return is
+// non-nil whenever the operator's refresh did NOT actually produce fresh
+// upstream data, even if the account remains usable:
+//
+//   - nothing usable at all → previous is restored so a transient outage does
+//     not strip a working catalog from the panel and live routing;
+//   - a usable but cached catalog → it is returned with an error, because the
+//     refresh genuinely failed even though the account still serves.
+//
+// Reporting the second case matters: silently returning the cached list is
+// exactly the bug this path exists to fix, and only the error lets the panel
+// say "upstream refresh failed, showing cached" instead of implying success.
+func (r *modelRuntime) refreshModelCatalogForAuth(authID, authIndex, callbackID string, previous modelReadinessSnapshot) (modelReadinessSnapshot, error) {
+	phys, err := hostAuthGetPhysicalFn(authIndex)
+	if err != nil || phys == nil {
+		if err == nil {
+			err = errors.New("auth record not readable")
+		}
+		if previous.State.executable() {
+			r.restoreModelSnapshot(authID, previous)
+		}
+		return previous, fmt.Errorf("auth %s: %w", authID, err)
+	}
+	current := r.ensureForAuth(authModelRequestWire{
+		AuthModelRequest: pluginapi.AuthModelRequest{
+			AuthID:       authID,
+			AuthProvider: providerName,
+			StorageJSON:  phys.JSON,
+		},
+		HostCallbackID: callbackID,
+	})
+	// config means the plugin YAML supplies a complete catalog, so upstream
+	// discovery is not involved and there is nothing to refresh.
+	if current.State.executable() && (current.ModelSource == modelSourceFresh || current.ModelSource == modelSourceConfig) {
+		return current, nil
+	}
+	if current.State.executable() {
+		return current, fmt.Errorf("auth %s: upstream refresh failed (%s), serving %s catalog", authID, current.ErrorCode, current.ModelSource)
+	}
+	if previous.State.executable() {
+		r.restoreModelSnapshot(authID, previous)
+	}
+	return previous, fmt.Errorf("auth %s: discovery failed (%s)", authID, current.ErrorCode)
+}
+
+// restoreModelSnapshot puts a pre-refresh snapshot back under the current
+// generation so the account keeps serving the last good catalog.
+func (r *modelRuntime) restoreModelSnapshot(authID string, snapshot modelReadinessSnapshot) {
+	r.configCommitMu.RLock()
+	configGeneration := r.configGeneration.Load()
+	slot := r.authSlot(authID)
+	slot.mu.Lock()
+	key := modelGenerationKey{Config: configGeneration}
+	if slot.key != key {
+		slot.key = key
+		slot.nextAuth++
+	}
+	snapshot.configGeneration = configGeneration
+	snapshot.authGeneration = slot.nextAuth
+	storeModelReadinessSnapshot(slot, snapshot)
+	slot.mu.Unlock()
+	r.configCommitMu.RUnlock()
 }
 
 func (r *modelRuntime) advanceConfigGeneration() uint64 {

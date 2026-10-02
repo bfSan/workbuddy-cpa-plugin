@@ -178,7 +178,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/trial", Description: "Claim expert trial pack for one Global account (auth_index). One-time 250 credits / 14 days."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
-			{Method: http.MethodGet, Path: base + "/models", Description: "List the effective model catalog with its source and per-model cooldown state."},
+			{Method: http.MethodGet, Path: base + "/models", Description: "List the effective model catalog with its source and per-model cooldown state. Add ?refresh=1 to re-discover every account's catalog upstream instead of serving the cached snapshots."},
 			{Method: http.MethodPut, Path: base + "/models", Description: "Replace the model list overlay (hide/order/add)."},
 			{Method: http.MethodPost, Path: base + "/models/action", Description: "Apply one model list edit: hide, restore, move or add."},
 			{Method: http.MethodGet, Path: base + "/models/credits", Description: "List per-model credit multipliers with their source."},
@@ -262,7 +262,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 	case req.Method == http.MethodGet && path == base+"/keepalive/status":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveStatus()))
 	case req.Method == http.MethodGet && path == base+"/models":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelListQuery()))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelListQueryForce(req.Query.Get("refresh") != "", req.HostCallbackID)))
 	case req.Method == http.MethodPut && path == base+"/models":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelOverlayWrite(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/models/action":

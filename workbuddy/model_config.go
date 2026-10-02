@@ -17,6 +17,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -323,6 +324,60 @@ func modelSourceRank(source modelSnapshotSource) int {
 // handleModelListQuery reports the effective catalog, its source, the active
 // overlay and each model's cooldown state.
 func handleModelListQuery() map[string]any {
+	return handleModelListQueryForce(false, "")
+}
+
+// handleModelListQueryForce serves the same payload, but with force it first
+// drops every cached snapshot and re-discovers each account from upstream.
+//
+// The refresh button must actually reach upstream: the plain read only unions
+// snapshots that were captured when each account was first seen, so a refresh
+// that does not force showed a stale list. refresh_error carries the failure
+// when every account failed, so the panel can say so instead of presenting the
+// cached list as if it were fresh.
+func handleModelListQueryForce(force bool, callbackID string) map[string]any {
+	resp, refreshErr := buildModelListQuery(force, callbackID)
+	if refreshErr != nil {
+		resp["refresh_error"] = refreshErr.Error()
+	}
+	return resp
+}
+
+func buildModelListQuery(force bool, callbackID string) (map[string]any, error) {
+	refreshErr := error(nil)
+	if force {
+		runtime := currentModelRuntime()
+		files := panelModelAuthFiles()
+		// Capture the pre-refresh snapshots first: invalidation retires them, and
+		// a failed re-discovery must put the last good catalog back rather than
+		// leaving the account with no models at all.
+		previous := make([]modelReadinessSnapshot, len(files))
+		for i, file := range files {
+			previous[i] = runtime.snapshotForAuthID(file.ID)
+		}
+		runtime.invalidateModelCaches()
+		// Re-discover per account. A single account failing is not fatal — the
+		// union still serves every account that answered — but any failure is
+		// reported so the panel never presents a cached list as a fresh one.
+		refreshed := 0
+		for i, file := range files {
+			snap, err := runtime.refreshModelCatalogForAuth(file.ID, file.AuthIndex, callbackID, previous[i])
+			if err == nil && snap.State.executable() {
+				refreshed++
+				continue
+			}
+			if refreshErr == nil {
+				if err != nil {
+					refreshErr = err
+				} else {
+					refreshErr = fmt.Errorf("auth %s: %s", file.ID, snap.ErrorCode)
+				}
+			}
+		}
+		if len(files) > 0 && refreshed == 0 && refreshErr == nil {
+			refreshErr = fmt.Errorf("no account returned a usable model list")
+		}
+	}
 	models, source := adminModelCatalogTyped()
 	overlay, revision := loadedModelOverlay()
 	items := make([]map[string]any, 0, len(models))
@@ -363,7 +418,7 @@ func handleModelListQuery() map[string]any {
 		"revision":         revision,
 		"persistent":       true,
 		"persistentFields": []string{"hide"},
-	}
+	}, refreshErr
 }
 
 func overlayHidden(o modelOverlay, id string) bool {

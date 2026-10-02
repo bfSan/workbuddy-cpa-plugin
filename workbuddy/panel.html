@@ -839,7 +839,10 @@ async function refreshModels(btn){
   }
 }
 
-async function loadModels(toast,preserveOnEmpty,refresh){
+// NOTE: the first parameter must NOT be called `toast` — that shadows the
+// global toast() below and makes every call inside this function throw
+// "toast is not a function".
+async function loadModels(toastOnError,preserveOnEmpty,refresh){
   const box=document.getElementById("modelList");
   const srcEl=document.getElementById("modelSource");
   const hintEl=document.getElementById("modelHint");
@@ -879,7 +882,7 @@ async function loadModels(toast,preserveOnEmpty,refresh){
   }catch(e){
     box.innerHTML=`<div class="mut">加载失败：${esc(String(e&&e.message||e))}</div>`;
     srcEl.textContent="—";
-    if(toast) toast("模型操作失败","err",String(e&&e.message||e));
+    if(toastOnError) toast("模型操作失败","err",String(e&&e.message||e));
     return false;
   }
 }

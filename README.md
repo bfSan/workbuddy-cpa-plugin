@@ -27,7 +27,7 @@
 从 Release 下载对应平台产物，放进 CPA 的 `plugins` 目录：
 
 ```bash
-unzip workbuddy_0.9.5_linux_amd64.zip
+unzip workbuddy_0.9.6_linux_amd64.zip
 cp workbuddy.so /path/to/cliproxyapi/plugins/workbuddy.so
 # 或平台子目录布局：plugins/linux/amd64/workbuddy.so
 ```

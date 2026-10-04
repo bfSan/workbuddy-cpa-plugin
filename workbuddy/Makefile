@@ -1,4 +1,4 @@
-.PHONY: build test lint clean release
+.PHONY: build test test-panel lint clean release
 
 GO ?= go
 NODE ?= node
@@ -13,6 +13,14 @@ build:
 test:
 	$(GO) test -race -count=1 ./...
 	$(NODE) --test panel.test.js
+
+# Browser check of the credit-consistency warning, against the LIVE deployment.
+# Separate from `test` because it needs a running CPA and a management key, and
+# because the poisoned half of it intercepts API responses in the browser.
+# PW_DIR must point at a node_modules tree holding playwright; the script exits 77
+# when it is absent.
+test-panel:
+	$(NODE) scripts/credit-warn-check.js
 
 # Lint everything (requires gofmt + go vet; staticcheck/gocritic/unparam optional).
 lint:

@@ -321,11 +321,30 @@ func summarizeCredits(accounts []wbAccount) map[string]any {
 			cnSize += cr.TotalSize
 		}
 	}
+	// total is the pool, and the three figures must add up: total = remain+used.
+	//
+	// This used to be `if size > total { total = size }`, which silently took the
+	// larger of the two. That is what hid the TotalDosage bug: an account whose
+	// size was inflated to 109699 while its packages summed to 14729 still
+	// produced a plausible looking total, so the panel showed numbers that were
+	// individually wrong and collectively impossible with nothing flagging it.
+	//
+	// A silent max() is the wrong tool for a disagreement between two figures that
+	// are supposed to be equal. The inconsistency is now reported instead, so a
+	// future accounting bug surfaces as a warning rather than as a plausible lie.
 	total := remain + used
-	if size > total {
-		total = size
+	inconsistent := int64(0)
+	// size==0 means upstream reported no capacity, which is a real state, not a
+	// disagreement. Only compare when there is a size to disagree with.
+	if size > 0 && size != remain+used {
+		inconsistent = 1
+		// Fall back to the larger figure so the displayed total still covers the
+		// pool, but only alongside the flag that says it is untrustworthy.
+		if size > total {
+			total = size
+		}
 	}
-	return map[string]any{
+	resp := map[string]any{
 		"account_count":   len(accounts),
 		"known_count":     known,
 		"disabled_count":  disabledN,
@@ -341,7 +360,12 @@ func summarizeCredits(accounts []wbAccount) map[string]any {
 		"global_remain":   glRemain,
 		"global_used":     glUsed,
 		"global_size":     glSize,
+		// inconsistent is 1 when total_size != total_remain+total_used, which
+		// means the underlying accounting disagrees with itself and the totals
+		// above should not be trusted. The panel surfaces this as a warning.
+		"inconsistent": inconsistent,
 	}
+	return resp
 }
 
 const egressIPURL = "https://api.ipify.org?format=json"

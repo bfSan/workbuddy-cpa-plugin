@@ -392,6 +392,15 @@ func fetchPersonalUserResourceWithCallback(sa *storedAuth, callbackID string) (*
 	// Aggregate ALL packages (体验版 + 多个签到/裂变包 + 其它赠送包).
 	// Remain = currently spendable. Used = consumed this cycle. Size = capacity.
 	// Daily check-in adds packages → Size and Remain go UP; that is grant, not usage.
+	return aggregatePackages(all, totalDosage), nil
+}
+
+// aggregatePackages folds the paged upstream package list into one summary.
+//
+// Split out from the fetch so the arithmetic can be tested directly. Every bug
+// found in this area has been in this function's arithmetic rather than in the
+// HTTP plumbing, and the HTTP version is impractical to assert against.
+func aggregatePackages(all []resourcePackage, totalDosage int64) *creditsSummary {
 	sum := &creditsSummary{}
 	for _, a := range all {
 		remain, used, size := packageRemainUsed(a)
@@ -409,6 +418,9 @@ func fetchPersonalUserResourceWithCallback(sa *storedAuth, callbackID string) (*
 	}
 	sum.PackCount = len(sum.Packages)
 	// Reconcile used with size-remain so UI totals always add up when size known.
+	//
+	// Only the per-package sum is self-consistent: every package satisfies
+	// remain+used=size, and the aggregate therefore does too.
 	if sum.TotalSize > 0 {
 		derived := sum.TotalSize - sum.TotalRemain
 		if derived < 0 {
@@ -419,19 +431,26 @@ func fetchPersonalUserResourceWithCallback(sa *storedAuth, callbackID string) (*
 			sum.TotalUsed = derived
 		}
 	}
-	// Upstream TotalDosage is the capacity pool (~sum of package sizes), not spend.
-	// Use it only as a size floor when pack sizes look incomplete.
-	if totalDosage > sum.TotalSize {
-		sum.TotalSize = totalDosage
-		derived := sum.TotalSize - sum.TotalRemain
-		if derived < 0 {
-			derived = 0
-		}
-		if derived > sum.TotalUsed {
-			sum.TotalUsed = derived
-		}
+	// Upstream TotalDosage is a lifetime capacity counter, not the current pool.
+	//
+	// It deliberately does NOT feed TotalSize, and the reason is a bug this code
+	// used to have: it was accepted as a size floor, and then used = size-remain
+	// was recomputed from it. That is unsound because the two numbers count
+	// different things. TotalRemain sums only spendable packages, while
+	// TotalDosage has accumulated every package the account has ever been
+	// granted, including long expired 签到裂变包. After a plan upgrade the
+	// divergence is large: one account here reported remain=10199, size=109699
+	// and therefore used=99500, while its 59 packages actually summed to
+	// used=4530 size=14729. The panel rendered 余10199 已用99500 池109699, which
+	// is self-contradictory on its face — remain+used should equal size, and any
+	// reader who checked would see 109699 against 10199+4530.
+	//
+	// The lifetime figure is kept in the summary for display only, as lifetime
+	// granted capacity. Nothing derives spend from it.
+	if totalDosage > sum.TotalDosage {
+		sum.TotalDosage = totalDosage
 	}
-	return sum, nil
+	return sum
 }
 
 func fetchEnterpriseCreditsCN(sa *storedAuth, callbackID string) (*creditsSummary, error) {

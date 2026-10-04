@@ -40,8 +40,14 @@ type creditsSummary struct {
 	TotalRemain int64 `json:"total_remain"`
 	// TotalUsed is consumed credits in the current cycle (sum of packages).
 	TotalUsed int64 `json:"total_used"`
-	// TotalSize is the credit capacity/pool (sum of package sizes). remain+used ≈ size.
+	// TotalSize is the credit capacity/pool (sum of package sizes). remain+used = size.
 	TotalSize int64 `json:"total_size"`
+	// TotalDosage is upstream's lifetime granted capacity: every package the
+	// account has ever received, including long expired ones. It is NOT the
+	// current pool and must never be subtracted from TotalRemain to derive spend
+	// -- the two count different sets of packages, and doing so once produced
+	// "used=99500" for an account whose packages summed to 4530.
+	TotalDosage int64 `json:"total_dosage,omitempty"`
 	// PackCount is number of resource packages included in the aggregate.
 	PackCount int `json:"pack_count"`
 	// FetchedAt is when this snapshot was taken (RFC3339). Upstream billing lag

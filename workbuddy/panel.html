@@ -60,7 +60,8 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .model-rows{display:flex;flex-direction:column;gap:6px;max-height:560px;overflow:auto;padding-right:2px}
 .model-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
 .model-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-weight:600;min-width:0;flex:1 1 auto;overflow-wrap:anywhere}
-.model-name{font-size:12px;flex:0 0 auto;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.model-name{font-size:12px;flex:0 0 auto;max-width:32%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.model-context{flex:0 0 128px;max-width:128px;background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:4px 6px;color:var(--fg);font-size:12px}
 
 /* 倍率只读展示：固定宽度，避免数值长短把整行挤动 */
 .model-credit{flex:0 0 92px;width:92px;padding:3px 8px;font-size:12px;text-align:center;font-variant-numeric:tabular-nums;color:var(--mut)}
@@ -909,6 +910,33 @@ async function waitForReloadedModels(){
   return false;
 }
 
+function contextLabel(n){
+  n=Number(n)||0; if(!n)return "自动";
+  if(n>=1000000)return (n/1000000).toFixed(n%1000000?1:0)+"M";
+  if(n>=1000)return Math.round(n/1000)+"K";
+  return String(n);
+}
+function renderContextSelect(m){
+  const options=Array.isArray(m.context_options)?m.context_options.map(Number).filter(Number.isFinite):[];
+  const current=Number(m.context_length)||0;
+  if(!options.length)return current?`<span class="model-context" title="有效上下文档位">${contextLabel(current)}</span>`:"";
+  const values=[0,...options.filter(v=>v!==current)];
+  if(current&&!values.includes(current))values.splice(1,0,current);
+  return `<select class="model-context" data-model-context="${esc(String(m.id||""))}" title="上游上下文档位">${values.map(v=>`<option value="${v}"${v===current?" selected":""}>${v?contextLabel(v):"自动"}</option>`).join("")}</select>`;
+}
+async function saveModelContext(select){
+  const id=String(select.dataset.modelContext||"").trim(); if(!id)return;
+  const value=Number(select.value)||0;
+  try{
+    const d=await api("/models/context",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:id,context_length:value||null})});
+    if(d&&d.error)throw new Error(d.error);
+    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({model_context:d.model_context||{}})});
+    await waitForReloadedModels(); toast("上下文档位已保存","ok",id+" · "+(value?contextLabel(value):"自动"));
+  }catch(e){toast("保存上下文档位失败","err",e.message||String(e)); await loadModels(false);}
+}
+function bindContextSelects(){
+  document.querySelectorAll("select[data-model-context]").forEach(el=>{if(el._bound)return;el._bound=true;el.addEventListener("change",()=>saveModelContext(el));});
+}
 function renderModels(){
   const box=document.getElementById("modelList");
   if(!lastModels.length){
@@ -945,7 +973,8 @@ function renderModels(){
       <span class="model-name mut">${esc(name)}</span>
       ${cdValue?`<span class="model-credit" title="上游积分倍率">${cdLabel}</span>`:`<span class="model-credit">—</span>`}
       ${free?`<span class="cd-badge free">免费</span>`:""}
-      <span class="model-actions">
+      ${renderContextSelect(m)}
+       <span class="model-actions">
         ${m.hidden?"":`
           <button type="button" class="ftag" onclick="moveModel('${escId}',-1)" aria-label="上移 ${escId}"${i===0?" disabled":""}>↑</button>
           <button type="button" class="ftag" onclick="moveModel('${escId}',1)" aria-label="下移 ${escId}"${i===lastModels.length-1?" disabled":""}>↓</button>
@@ -958,6 +987,7 @@ function renderModels(){
       ${tags.length?`<span class="model-tags">${tags.join("")}</span>`:""}
     </div>`;
   }).join("")+`</div>`;
+  bindContextSelects();
 }
 
 async function modelAction(action,id,extra){

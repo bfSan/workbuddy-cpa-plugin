@@ -185,6 +185,8 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
 			{Method: http.MethodGet, Path: base + "/models", Description: "List the effective model catalog with its source and per-model cooldown state. Add ?refresh=1 to re-discover every account's catalog upstream instead of serving the cached snapshots."},
+			{Method: http.MethodGet, Path: base + "/models/context", Description: "Get persistent per-model context-window overrides."},
+			{Method: http.MethodPost, Path: base + "/models/context", Description: "Set or clear one per-model context-window override."},
 			{Method: http.MethodPut, Path: base + "/models", Description: "Replace the model list overlay (hide/order/add)."},
 			{Method: http.MethodPost, Path: base + "/models/action", Description: "Apply one model list edit: hide, restore, move or add."},
 			{Method: http.MethodGet, Path: base + "/models/credits", Description: "List per-model credit multipliers with their source."},
@@ -273,6 +275,10 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelOverlayWrite(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/models/action":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelOverlayAction(req.ManagementRequest)))
+	case req.Method == http.MethodGet && path == base+"/models/context":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{"model_context": currentModelContextOverrides()}))
+	case (req.Method == http.MethodPost || req.Method == http.MethodPut) && path == base+"/models/context":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelContextWrite(req.ManagementRequest)))
 	case req.Method == http.MethodGet && path == base+"/models/credits":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelCreditsQuery()))
 	case req.Method == http.MethodPost && path == base+"/models/credits":
@@ -291,6 +297,63 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleAccountDelete(req.ManagementRequest)))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
+}
+
+func handleModelContextWrite(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		Model         string `json:"model"`
+		ID            string `json:"id"`
+		ContextLength *int64 `json:"context_length"`
+	}
+	if len(req.Body) > 0 {
+		if err := json.Unmarshal(req.Body, &body); err != nil {
+			return map[string]any{"success": false, "error": "invalid json body"}
+		}
+	}
+	id := strings.TrimSpace(body.Model)
+	if id == "" {
+		id = strings.TrimSpace(body.ID)
+	}
+	if id == "" {
+		return map[string]any{"success": false, "error": "model is required"}
+	}
+	if body.ContextLength != nil && (*body.ContextLength <= 0 || *body.ContextLength > maxContextWindowValue) {
+		return map[string]any{"success": false, "error": "context_length is out of range"}
+	}
+	// Reject a tier the provider does not offer. Guessing is what makes the
+	// upstream fall back to its own smaller limit, which is the bug this
+	// setting exists to prevent.
+	if body.ContextLength != nil {
+		if meta, known := contextMetadataForModel(id); known && len(meta.SupportedLengths) > 0 {
+			offered := false
+			for _, value := range meta.SupportedLengths {
+				if value == *body.ContextLength {
+					offered = true
+					break
+				}
+			}
+			if !offered {
+				return map[string]any{
+					"success":         false,
+					"error":           "context_length is not a supported tier for this model",
+					"context_options": meta.SupportedLengths,
+				}
+			}
+		}
+	}
+	next := setModelContextOverride(id, body.ContextLength)
+	// Snapshots bake the effective length in, so apply the new state to them
+	// immediately; otherwise the previous tier stays visible to clients until the
+	// next upstream refresh.
+	applied := currentModelRuntime().reapplyModelContextSnapshots(id)
+	return map[string]any{
+		"success":          true,
+		"model":            id,
+		"context_length":   body.ContextLength,
+		"model_context":    next,
+		"persistent":       true,
+		"snapshot_updated": applied,
+	}
 }
 
 // handleAccountRename sets the display name of one credential.
@@ -485,7 +548,8 @@ func mutatingManagementPath(path string) bool {
 		base + "/trial",
 		base + "/keepalive",
 		base + "/models",
-		base + "/models/action":
+		base + "/models/action",
+		base + "/models/context":
 		return true
 	}
 	return false

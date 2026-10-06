@@ -51,6 +51,7 @@ type featureRuntimeConfig struct {
 	configuredModels   []string
 	configuredCredits  map[string]string
 	hiddenModels       []string
+	modelContext       map[string]int64
 }
 
 var featureRuntime atomic.Pointer[featureRuntimeConfig]
@@ -72,6 +73,12 @@ func currentFeatureRuntime() *featureRuntimeConfig {
 	snapshot.desensitizeTerms = append([]string(nil), cfg.desensitizeTerms...)
 	snapshot.configuredModels = append([]string(nil), cfg.configuredModels...)
 	snapshot.hiddenModels = append([]string(nil), cfg.hiddenModels...)
+	if cfg.modelContext != nil {
+		snapshot.modelContext = make(map[string]int64, len(cfg.modelContext))
+		for id, value := range cfg.modelContext {
+			snapshot.modelContext[id] = value
+		}
+	}
 	if cfg.configuredCredits != nil {
 		snapshot.configuredCredits = make(map[string]string, len(cfg.configuredCredits))
 		for id, value := range cfg.configuredCredits {
@@ -94,6 +101,7 @@ type featureConfigYAML struct {
 	// before model responses reach CPA, so the host global registry never sees
 	// hidden IDs.
 	HiddenModels yaml.Node `yaml:"hidden_models"`
+	ModelContext yaml.Node `yaml:"model_context"`
 }
 
 func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
@@ -135,6 +143,10 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	modelContext, err := normalizedModelContextConfig(doc.ModelContext)
+	if err != nil {
+		return nil, err
+	}
 	return &featureRuntimeConfig{
 		desensitizeEnabled: doc.Desensitize != nil && *doc.Desensitize,
 		desensitizeTerms:   terms,
@@ -145,6 +157,7 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 		configuredModels:   models,
 		configuredCredits:  credits,
 		hiddenModels:       hiddenModels,
+		modelContext:       modelContext,
 	}, nil
 }
 

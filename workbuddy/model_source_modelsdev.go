@@ -207,6 +207,10 @@ func fetchModelsDevMetadata(etag, callbackID string, do modelHTTPDo) (modelsDevF
 func cloneModelFacts(facts modelFacts) modelFacts {
 	facts.ContextLength = cloneInt64(facts.ContextLength)
 	facts.MaxCompletionTokens = cloneInt64(facts.MaxCompletionTokens)
+	facts.DefaultContextLength = cloneInt64(facts.DefaultContextLength)
+	facts.MaxAllowedSize = cloneInt64(facts.MaxAllowedSize)
+	facts.MaxInputTokens = cloneInt64(facts.MaxInputTokens)
+	facts.SupportedContextLengths = append([]int64(nil), facts.SupportedContextLengths...)
 	facts.SupportedInputModalities = append([]string(nil), facts.SupportedInputModalities...)
 	facts.SupportedOutputModalities = append([]string(nil), facts.SupportedOutputModalities...)
 	return facts
@@ -227,6 +231,18 @@ func fillMissingModelFacts(dst *modelFacts, src modelFacts) {
 	}
 	if dst.MaxCompletionTokens == nil {
 		dst.MaxCompletionTokens = cloneInt64(src.MaxCompletionTokens)
+	}
+	if dst.DefaultContextLength == nil {
+		dst.DefaultContextLength = cloneInt64(src.DefaultContextLength)
+	}
+	if dst.MaxAllowedSize == nil {
+		dst.MaxAllowedSize = cloneInt64(src.MaxAllowedSize)
+	}
+	if dst.MaxInputTokens == nil {
+		dst.MaxInputTokens = cloneInt64(src.MaxInputTokens)
+	}
+	if len(dst.SupportedContextLengths) == 0 {
+		dst.SupportedContextLengths = append([]int64(nil), src.SupportedContextLengths...)
 	}
 	if len(dst.SupportedInputModalities) == 0 {
 		dst.SupportedInputModalities = append([]string(nil), src.SupportedInputModalities...)
@@ -253,6 +269,13 @@ func modelInfoFromSources(serving modelFacts, canonical *modelFacts) pluginapi.M
 	if merged.MaxCompletionTokens != nil {
 		info.MaxCompletionTokens = *merged.MaxCompletionTokens
 	}
+	// Keep the complete provider capability in the plugin-side registry and
+	// expose the effective default/override through CPA's scalar ContextLength.
+	recordModelContextFacts([]modelFacts{merged})
+	// Record the untouched value before the override is applied: this is what
+	// lets a later "auto" reset roll the snapshot back.
+	recordBaseContextLength(serving.ID, info.ContextLength)
+	applyModelContextToInfo(&info, serving.ID)
 	info.SupportedInputModalities = append([]string(nil), merged.SupportedInputModalities...)
 	info.SupportedOutputModalities = append([]string(nil), merged.SupportedOutputModalities...)
 	return info

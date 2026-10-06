@@ -383,14 +383,18 @@ func buildModelListQuery(force bool, callbackID string) (map[string]any, error) 
 	items := make([]map[string]any, 0, len(models))
 	for i, m := range models {
 		id := strings.TrimSpace(m.ID)
+		effectiveContext, contextSource, contextOptions := effectiveModelContext(id, m.ContextLength)
 		items = append(items, map[string]any{
-			"id":          id,
-			"name":        m.Name,
-			"displayName": m.DisplayName,
-			"position":    i,
-			"hidden":      overlayHidden(overlay, id),
-			"custom":      overlayAdded(overlay, id),
-			"credits":     modelCreditsField(id),
+			"id":              id,
+			"name":            m.Name,
+			"displayName":     m.DisplayName,
+			"position":        i,
+			"context_length":  effectiveContext,
+			"context_source":  contextSource,
+			"context_options": contextOptions,
+			"hidden":          overlayHidden(overlay, id),
+			"custom":          overlayAdded(overlay, id),
+			"credits":         modelCreditsField(id),
 			// The catalog is wider than what serves chat: completion, image and
 			// unresolved entries are listed but flagged so an operator can see
 			// them without sending a request that will 11102/11103.

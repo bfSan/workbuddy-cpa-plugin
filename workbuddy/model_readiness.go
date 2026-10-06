@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -666,11 +667,58 @@ func (r *modelRuntime) metadataStatus() modelMetadataStatus {
 	return modelMetadataStatus{Source: modelSourceNone, ErrorCode: r.storeError}
 }
 
+func onlyModelContextChanged(a, b *featureRuntimeConfig) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if reflect.DeepEqual(a.modelContext, b.modelContext) {
+		return false
+	}
+	left := *a
+	right := *b
+	left.matcher = nil
+	right.matcher = nil
+	left.modelContext = nil
+	right.modelContext = nil
+	return reflect.DeepEqual(left, right)
+}
+
+// changedContextOverrides lists the models whose override was added, changed or
+// removed between two configs. Each needs its snapshots recomputed.
+func changedContextOverrides(previous, next *featureRuntimeConfig) map[string]struct{} {
+	changed := make(map[string]struct{})
+	var previousMap, nextMap map[string]int64
+	if previous != nil {
+		previousMap = previous.modelContext
+	}
+	if next != nil {
+		nextMap = next.modelContext
+	}
+	for model, value := range previousMap {
+		if other, still := nextMap[model]; !still || other != value {
+			changed[model] = struct{}{}
+		}
+	}
+	for model, value := range nextMap {
+		if other, existed := previousMap[model]; !existed || other != value {
+			changed[model] = struct{}{}
+		}
+	}
+	return changed
+}
+
 func (r *modelRuntime) commitFeatureRuntime(next *featureRuntimeConfig) uint64 {
+	previous := currentFeatureRuntime()
 	snapshot := *next
 	snapshot.desensitizeTerms = append([]string(nil), next.desensitizeTerms...)
 	snapshot.configuredModels = append([]string(nil), next.configuredModels...)
 	snapshot.hiddenModels = append([]string(nil), next.hiddenModels...)
+	if next.modelContext != nil {
+		snapshot.modelContext = make(map[string]int64, len(next.modelContext))
+		for id, value := range next.modelContext {
+			snapshot.modelContext[id] = value
+		}
+	}
 	if next.configuredCredits != nil {
 		snapshot.configuredCredits = make(map[string]string, len(next.configuredCredits))
 		for id, value := range next.configuredCredits {
@@ -685,6 +733,21 @@ func (r *modelRuntime) commitFeatureRuntime(next *featureRuntimeConfig) uint64 {
 	syncOverlayHiddenModels(snapshot.hiddenModels)
 	r.configCommitMu.Lock()
 	featureRuntime.Store(&snapshot)
+	// A context-tier change affects request construction and registry metadata,
+	// but not upstream model availability. Keep existing per-auth snapshots alive
+	// so selecting a tier cannot create a transient "model catalog not ready"
+	// outage; the next normal model read still observes the new override.
+	if onlyModelContextChanged(previous, &snapshot) {
+		generation := r.configGeneration.Load()
+		r.configCommitMu.Unlock()
+		// Snapshots bake the effective length in, so both selecting and clearing a
+		// tier must be applied here: the host config PATCH is the panel's
+		// persistence path and does not go through the plugin's own write endpoint.
+		for model := range changedContextOverrides(previous, &snapshot) {
+			r.reapplyModelContextSnapshots(model)
+		}
+		return generation
+	}
 	generation := r.configGeneration.Add(1)
 	r.configCommitMu.Unlock()
 	return generation

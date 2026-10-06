@@ -26,6 +26,10 @@ type modelFacts struct {
 	Credits                   string   `json:"credits,omitempty"`
 	ContextLength             *int64   `json:"context_length,omitempty"`
 	MaxCompletionTokens       *int64   `json:"max_completion_tokens,omitempty"`
+	DefaultContextLength      *int64   `json:"default_context_length,omitempty"`
+	SupportedContextLengths   []int64  `json:"supported_context_lengths,omitempty"`
+	MaxAllowedSize            *int64   `json:"max_allowed_size,omitempty"`
+	MaxInputTokens            *int64   `json:"max_input_tokens,omitempty"`
 	SupportedInputModalities  []string `json:"supported_input_modalities,omitempty"`
 	SupportedOutputModalities []string `json:"supported_output_modalities,omitempty"`
 }
@@ -89,15 +93,48 @@ type workBuddyAgentWire struct {
 // workBuddyRichModelWire is one entry of /v3/config's data.models rich
 // catalog. Only the fields the plugin can act on are decoded; unknown keys
 // (promotions, tiers, related models) stay ignored on purpose.
+type workBuddyContextWindowWire struct {
+	DefaultLength    *int64  `json:"defaultLength"`
+	SupportedLengths []int64 `json:"supportedLengths"`
+}
+
+// UnmarshalJSON accepts both the current object form and the older numeric
+// contextWindow form still returned by some legacy fixtures/accounts.
+func (w *workBuddyContextWindowWire) UnmarshalJSON(raw []byte) error {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		*w = workBuddyContextWindowWire{}
+		return nil
+	}
+	if strings.HasPrefix(value, "{") {
+		type alias workBuddyContextWindowWire
+		var decoded alias
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return err
+		}
+		*w = workBuddyContextWindowWire(decoded)
+		return nil
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return err
+	}
+	w.DefaultLength = &n
+	w.SupportedLengths = []int64{n}
+	return nil
+}
+
 type workBuddyRichModelWire struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	DescriptionEn string `json:"descriptionEn"`
-	DescriptionZh string `json:"descriptionZh"`
-	Credits       string `json:"credits"`
-	Disabled      bool   `json:"disabled"`
-	ContextWindow *int64 `json:"maxInputTokens"`
-	MaxTokens     *int64 `json:"maxOutputTokens"`
+	ID             string                      `json:"id"`
+	Name           string                      `json:"name"`
+	DescriptionEn  string                      `json:"descriptionEn"`
+	DescriptionZh  string                      `json:"descriptionZh"`
+	Credits        string                      `json:"credits"`
+	Disabled       bool                        `json:"disabled"`
+	ContextWindow  *workBuddyContextWindowWire `json:"contextWindow"`
+	MaxAllowedSize *int64                      `json:"maxAllowedSize"`
+	MaxInputTokens *int64                      `json:"maxInputTokens"`
+	MaxTokens      *int64                      `json:"maxOutputTokens"`
 }
 
 type workBuddyLegacyModelWire struct {
@@ -201,7 +238,16 @@ func parseWorkBuddyV3Config(raw []byte) ([]modelFacts, error) {
 		models[i].Name = strings.TrimSpace(entry.Name)
 		models[i].Description = firstNonEmptyModelDescription(entry.DescriptionEn, entry.DescriptionZh)
 		models[i].Credits = normalizeModelCredits(entry.Credits)
-		models[i].ContextLength = entry.ContextWindow
+		if entry.ContextWindow != nil {
+			models[i].DefaultContextLength = entry.ContextWindow.DefaultLength
+			models[i].SupportedContextLengths = append([]int64(nil), entry.ContextWindow.SupportedLengths...)
+		}
+		models[i].MaxAllowedSize = entry.MaxAllowedSize
+		models[i].MaxInputTokens = entry.MaxInputTokens
+		models[i].ContextLength = entry.MaxInputTokens
+		if models[i].ContextLength == nil && entry.ContextWindow != nil {
+			models[i].ContextLength = entry.ContextWindow.DefaultLength
+		}
 		models[i].MaxCompletionTokens = entry.MaxTokens
 	}
 	return validateModelFacts(models)
@@ -293,6 +339,7 @@ func parseWorkBuddyLegacyModels(raw []byte) ([]modelFacts, error) {
 			Description:         firstNonEmptyModelDescription(model.Description),
 			Credits:             normalizeModelCredits(model.Credits),
 			ContextLength:       model.ContextWindow,
+			MaxInputTokens:      model.ContextWindow,
 			MaxCompletionTokens: model.MaxTokens,
 		}
 	}

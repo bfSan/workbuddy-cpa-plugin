@@ -108,6 +108,11 @@ type oauthRequestProfile struct {
 	stateURL  string
 	userAgent string
 	origin    string
+	// base is the API host this flow's remaining steps talk to. Login is three
+	// requests — auth/state, auth/token, login/account — and they must all land in
+	// the same realm. Splitting them mints a token that the other realm's
+	// /login/account will not honour, so the account never materialises.
+	base string
 }
 
 // oauthLoginRegion selects which upstream realm a NEW login targets. CN is the
@@ -152,6 +157,7 @@ func oauthProfileForModeRegion(mode, region string) oauthRequestProfile {
 				stateURL:  upstreamBaseGlobal + "/v2/plugin/auth/state?platform=workbuddy",
 				userAgent: workBuddyDesktopUA,
 				origin:    originRefererGlobal,
+				base:      upstreamBaseGlobal,
 			}
 		}
 		return oauthRequestProfile{
@@ -159,6 +165,7 @@ func oauthProfileForModeRegion(mode, region string) oauthRequestProfile {
 			stateURL:  upstreamBaseCN + "/v2/plugin/auth/state?platform=workbuddy",
 			userAgent: workBuddyDesktopUA,
 			origin:    "https://www.workbuddy.cn",
+			base:      upstreamBaseCN,
 		}
 	}
 	return oauthRequestProfile{
@@ -166,6 +173,7 @@ func oauthProfileForModeRegion(mode, region string) oauthRequestProfile {
 		stateURL:  endpointAuthState,
 		userAgent: clientUA,
 		origin:    originReferer,
+		base:      upstreamBaseCN,
 	}
 }
 
@@ -200,7 +208,7 @@ func buildAuthStateRequest(profile oauthRequestProfile) (*http.Request, error) {
 }
 
 func buildAuthTokenRequest(profile oauthRequestProfile, state string) (*http.Request, error) {
-	req, err := http.NewRequest(http.MethodGet, endpointAuthToken+state, nil)
+	req, err := http.NewRequest(http.MethodGet, endpointAuthTokenFor(profile)+state, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +217,7 @@ func buildAuthTokenRequest(profile oauthRequestProfile, state string) (*http.Req
 }
 
 func buildLoginAccountRequest(profile oauthRequestProfile, state, accessToken string) (*http.Request, error) {
-	req, err := http.NewRequest(http.MethodGet, endpointLoginAcct+state, nil)
+	req, err := http.NewRequest(http.MethodGet, endpointLoginAcctFor(profile)+state, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -221,6 +229,29 @@ func buildLoginAccountRequest(profile oauthRequestProfile, state, accessToken st
 		req.Header.Set("X-No-Department-Info", "true")
 	}
 	return req, nil
+}
+
+// endpointAuthTokenFor and endpointLoginAcctFor pick the login endpoint that
+// matches the profile's realm.
+//
+// The CN constants (endpointAuthToken / endpointLoginAcct) are the historical
+// single-realm spellings and are still correct for CN; a Global flow must ask
+// workbuddy.ai instead. Sending a Global token to the CN /login/account — or
+// the reverse — is why an international login could complete in the browser yet
+// never produce an account: the last step was asking the wrong realm to honour
+// a token it did not issue.
+func endpointAuthTokenFor(profile oauthRequestProfile) string {
+	if profile.base != "" {
+		return profile.base + "/v2/plugin/auth/token?state="
+	}
+	return endpointAuthToken
+}
+
+func endpointLoginAcctFor(profile oauthRequestProfile) string {
+	if profile.base != "" {
+		return profile.base + "/v2/plugin/login/account?state="
+	}
+	return endpointLoginAcct
 }
 
 func buildTokenRefreshRequest(profile oauthRequestProfile, sa *storedAuth) (*http.Request, error) {

@@ -234,7 +234,8 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     </div>
   </div>
   <div class="bar">
-    <button class="sec" id="oauthLoginBtn" onclick="openOAuthLogin(this)">OAuth 登录</button>
+    <button class="sec" id="oauthLoginBtn" onclick="openOAuthLogin(this,'cn')">登录 CN 账号</button>
+    <button class="sec" id="oauthLoginIntlBtn" onclick="openOAuthLogin(this,'global')" title="登录国际账号（workbuddy.ai）。国际账号的模型目录与国内不同。">登录国际账号</button>
     <button class="sec" id="importBtn" onclick="openImportModal()">导入凭证</button>
     <button class="sec" onclick="openDesensitizeModal()">屏蔽词设置</button>
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
@@ -555,8 +556,7 @@ function card(a){
   ${progressHTML(cr)}
   ${coolingHTML}
   ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
-  <div class="actions">${refreshBtn}${actionHTML}</div>
-  <div class="actions">${manageBtn}</div>
+  <div class="actions">${refreshBtn}${actionHTML}${manageBtn}</div>
   </div>`;
 }
 function fmtLeft(sec){
@@ -1460,6 +1460,7 @@ document.addEventListener("keydown",e=>{
 });
 let oauthState="";
 let oauthURL="";
+let oauthRegion="cn";
 let oauthDeadline=0;
 let oauthPollTimer=null;
 let oauthPollGeneration=0;
@@ -1544,18 +1545,32 @@ async function pollOAuthLogin(generation){
     scheduleOAuthPoll(generation);
   }
 }
-async function startOAuthLogin(btn){
+// startOAuthLogin opens a login session against one realm. The two realms are
+// separate account systems with separate model catalogs, so the region chosen
+// here decides which catalog the resulting account will see.
+async function startOAuthLogin(btn,region){
+  region=(region==="global")?"global":"cn";
+  oauthRegion=region;
   stopOAuthPolling();
   oauthState="";
   oauthURL="";
   oauthDeadline=0;
   document.getElementById("oauthUrl").value="";
   oauthStatusText("正在创建登录会话…");
+  const title=document.getElementById("oauthModalTitle");
+  if(title) title.textContent = region==="global" ? "OAuth 登录 · 国际账号（workbuddy.ai）" : "OAuth 登录 · CN 账号";
   document.getElementById("oauthModal").classList.add("show");
   busy(btn,true);
   try{
-    const d=await api("/oauth/start",{method:"POST"});
+    const d=await api("/oauth/start",{method:"POST",body:JSON.stringify({region})});
     if(!d.success||!d.url||!d.state)throw new Error(d.error||"登录会话创建失败");
+    // Trust the server's answer over the button pressed: if the host ignored the
+    // region, say so rather than labelling the page with the wrong realm.
+    if(d.region&&d.region!==region){
+      oauthRegion=d.region;
+      const t2=document.getElementById("oauthModalTitle");
+      if(t2) t2.textContent = d.region==="global" ? "OAuth 登录 · 国际账号（workbuddy.ai）" : "OAuth 登录 · CN 账号";
+    }
     oauthState=d.state;
     oauthURL=d.url;
     const seconds=Math.max(1,Number(d.expiresIn)||300);
@@ -1570,11 +1585,11 @@ async function startOAuthLogin(btn){
     busy(btn,false);
   }
 }
-function openOAuthLogin(btn){
-  return startOAuthLogin(btn);
+function openOAuthLogin(btn,region){
+  return startOAuthLogin(btn,region);
 }
 function restartOAuthLogin(btn){
-  return startOAuthLogin(btn);
+  return startOAuthLogin(btn,oauthRegion||"cn");
 }
 /* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
 if(window.__wbThemeSync)window.__wbThemeSync();

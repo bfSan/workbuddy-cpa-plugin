@@ -110,8 +110,50 @@ type oauthRequestProfile struct {
 	origin    string
 }
 
+// oauthLoginRegion selects which upstream realm a NEW login targets. CN is the
+// default: every existing install and every stored auth file predates the
+// international realm, and the previous build could only ever mint CN tokens.
+const (
+	oauthLoginRegionCN     = "cn"
+	oauthLoginRegionGlobal = "global"
+)
+
+// normalizeOAuthLoginRegion maps a caller-supplied region onto cn/global.
+// Empty or unrecognised values fall back to CN so an old panel, or any caller
+// that does not send the field, keeps working exactly as before.
+func normalizeOAuthLoginRegion(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case oauthLoginRegionGlobal, "intl", "international":
+		return oauthLoginRegionGlobal
+	default:
+		return oauthLoginRegionCN
+	}
+}
+
+// oauthProfileForMode resolves the login profile for a mode.
+//
+// region only affects the WorkBuddy desktop profile, because that is the one
+// with two realms. It selects both the auth-state endpoint and the Origin/Referer
+// the login page is served from, so the browser session — and therefore the
+// token's iss — lands in the intended realm. The CLI profile has a single realm
+// and ignores the argument.
 func oauthProfileForMode(mode string) oauthRequestProfile {
+	return oauthProfileForModeRegion(mode, oauthLoginRegionCN)
+}
+
+func oauthProfileForModeRegion(mode, region string) oauthRequestProfile {
 	if mode == oauthClientModeWorkBuddy {
+		// CN servers the login portal from www.workbuddy.cn but the API from
+		// copilot.tencent.com; the international realm uses workbuddy.ai for both,
+		// which is why origin and base are chosen together rather than one of them.
+		if normalizeOAuthLoginRegion(region) == oauthLoginRegionGlobal {
+			return oauthRequestProfile{
+				mode:      oauthClientModeWorkBuddy,
+				stateURL:  upstreamBaseGlobal + "/v2/plugin/auth/state?platform=workbuddy",
+				userAgent: workBuddyDesktopUA,
+				origin:    originRefererGlobal,
+			}
+		}
 		return oauthRequestProfile{
 			mode:      oauthClientModeWorkBuddy,
 			stateURL:  upstreamBaseCN + "/v2/plugin/auth/state?platform=workbuddy",
@@ -227,11 +269,19 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 // embedded panel always uses the WorkBuddy desktop profile, even when the host
 // native auth flow is configured for CLI.
 func startLoginWithMode(mode string) ([]byte, error) {
+	return startLoginWithModeRegion(mode, oauthLoginRegionCN)
+}
+
+// startLoginWithModeRegion starts a login flow against the given realm. The
+// chosen profile is stored on the pending login context so the token-exchange
+// leg later talks to the same realm — a CN profile minting through a global
+// endpoint (or the reverse) fails at exchange time, not at start time.
+func startLoginWithModeRegion(mode, region string) ([]byte, error) {
 	client, err := newLoginClient()
 	if err != nil {
 		return nil, fmt.Errorf("auth state failed: %w", err)
 	}
-	profile := oauthProfileForMode(mode)
+	profile := oauthProfileForModeRegion(mode, region)
 	stateReq, err := buildAuthStateRequest(profile)
 	if err != nil {
 		return nil, fmt.Errorf("auth state failed: %w", err)

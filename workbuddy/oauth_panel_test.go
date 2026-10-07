@@ -31,7 +31,9 @@ func TestHandleOAuthStart_UsesWorkBuddyDesktopProfile(t *testing.T) {
 	})}
 	t.Cleanup(func() { sharedClient = oldClient })
 
-	res := handleOAuthStart()
+	// No region supplied: this must keep behaving exactly as it did before the
+	// international realm existed, i.e. start against CN.
+	res := handleOAuthStart(pluginapi.ManagementRequest{})
 	if ok, _ := res["success"].(bool); !ok {
 		t.Fatalf("handleOAuthStart failed: %+v", res)
 	}
@@ -83,7 +85,7 @@ func TestHandleOAuthStart_UsesWorkBuddyDesktopProfile(t *testing.T) {
 // that the panel endpoint never returns a half-built flow: either a complete
 // URL plus state, or a failure that says why.
 func TestHandleOAuthStart_NeverReturnsHalfBuiltFlow(t *testing.T) {
-	res := handleOAuthStart()
+	res := handleOAuthStart(pluginapi.ManagementRequest{})
 	if ok, _ := res["success"].(bool); ok {
 		if strings.TrimSpace(res["url"].(string)) == "" || strings.TrimSpace(res["state"].(string)) == "" {
 			t.Fatalf("success must carry url and state, got %+v", res)

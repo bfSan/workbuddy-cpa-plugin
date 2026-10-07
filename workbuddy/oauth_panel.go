@@ -23,8 +23,27 @@ import (
 // handleOAuthStart opens a login flow and returns the URL for the operator to
 // open. The state token is what the panel polls with; it is single-use and
 // expires with the flow.
-func handleOAuthStart() map[string]any {
-	raw, err := startLoginWithMode(oauthClientModeWorkBuddy)
+// oauthStartRegionFromRequest reads the realm a NEW login should target.
+// Accepted as ?region= or {"region": ...}; absent means CN, which is what every
+// caller before the international realm existed already sends.
+func oauthStartRegionFromRequest(req pluginapi.ManagementRequest) string {
+	if v := strings.TrimSpace(req.Query.Get("region")); v != "" {
+		return normalizeOAuthLoginRegion(v)
+	}
+	if len(req.Body) > 0 {
+		var body struct {
+			Region string `json:"region"`
+		}
+		if err := json.Unmarshal(req.Body, &body); err == nil && strings.TrimSpace(body.Region) != "" {
+			return normalizeOAuthLoginRegion(body.Region)
+		}
+	}
+	return oauthLoginRegionCN
+}
+
+func handleOAuthStart(req pluginapi.ManagementRequest) map[string]any {
+	region := oauthStartRegionFromRequest(req)
+	raw, err := startLoginWithModeRegion(oauthClientModeWorkBuddy, region)
 	if err != nil {
 		return map[string]any{"success": false, "error": err.Error()}
 	}
@@ -41,6 +60,9 @@ func handleOAuthStart() map[string]any {
 		"state":     env.Result.State,
 		"expiresAt": env.Result.ExpiresAt.UTC().Format(time.RFC3339),
 		"expiresIn": int(time.Until(env.Result.ExpiresAt).Round(time.Second) / time.Second),
+		// Echoed so the panel can show which realm the opened page belongs to and
+		// so a silent fallback to CN is visible instead of assumed.
+		"region": region,
 	}
 }
 

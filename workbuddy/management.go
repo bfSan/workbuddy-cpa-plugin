@@ -193,7 +193,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/models/credits", Description: "Pin or clear one model's credit multiplier (body: {model, credits})."},
 			{Method: http.MethodGet, Path: base + "/cooldowns", Description: "List active per-(account, model) throttling entries."},
 			{Method: http.MethodPost, Path: base + "/cooldowns/clear", Description: "Clear throttling for one account (auth_id) or one pair (auth_id + model)."},
-			{Method: http.MethodPost, Path: base + "/oauth/start", Description: "Start an OAuth login flow and return the URL to open."},
+			{Method: http.MethodPost, Path: base + "/oauth/start", Description: "Start an OAuth login flow and return the URL to open. Optional body/query region=cn|global chooses the realm; CN is the default. The two realms have different model catalogs."},
 			{Method: http.MethodPost, Path: base + "/oauth/poll", Description: "Poll one OAuth login flow (body or query: state)."},
 			{Method: http.MethodPost, Path: base + "/accounts/rename", Description: "Set the display name of one account (body: {auth_index, name})."},
 			{Method: http.MethodPost, Path: base + "/accounts/delete", Description: "Delete one account so it can be re-registered (body: {auth_index})."},
@@ -291,7 +291,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 	case req.Method == http.MethodPost && path == base+"/cooldowns/clear":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCooldownClear(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/oauth/start":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleOAuthStart()))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleOAuthStart(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/oauth/poll":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleOAuthPoll(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/accounts/rename":

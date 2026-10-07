@@ -316,7 +316,7 @@ func buildTokenRefreshRequest(profile oauthRequestProfile, sa *storedAuth) (*htt
 // platform is deliberately NOT re-set: upstream already put the right one in
 // authUrl (it echoes the platform the auth/state call asked for). Overwriting it
 // here would risk contradicting the state the backend just minted.
-func decorateDesktopAuthURL(rawURL, loginSessionID, clientVersion string) (string, error) {
+func decorateDesktopAuthURL(rawURL, clientVersion string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", err
@@ -327,7 +327,6 @@ func decorateDesktopAuthURL(rawURL, loginSessionID, clientVersion string) (strin
 	} else {
 		query.Set("version", loginVersionCN)
 	}
-	query.Set("loginSessionId", loginSessionID)
 	u.RawQuery = query.Encode()
 	return u.String(), nil
 }
@@ -370,19 +369,16 @@ func startLoginWithModeRegion(mode, region string) ([]byte, error) {
 	if st.State == "" || st.AuthURL == "" {
 		return nil, fmt.Errorf("auth state: missing state or authUrl — please restart the login flow")
 	}
-	loginSessionID := ""
 	if profile.mode == oauthClientModeWorkBuddy {
-		loginSessionID = randomHex(16)
-		st.AuthURL, err = decorateDesktopAuthURL(st.AuthURL, loginSessionID, profile.clientVersion)
+		st.AuthURL, err = decorateDesktopAuthURL(st.AuthURL, profile.clientVersion)
 		if err != nil {
 			return nil, fmt.Errorf("auth state: invalid authUrl: %w", err)
 		}
 	}
 	loginStates.Store(st.State, &loginCtx{
-		client:         client,
-		expires:        time.Now().Add(loginTTL),
-		profile:        profile,
-		loginSessionID: loginSessionID,
+		client:  client,
+		expires: time.Now().Add(loginTTL),
+		profile: profile,
 	})
 	return okEnvelope(pluginapi.AuthLoginStartResponse{
 		Provider:  providerName,

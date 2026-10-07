@@ -3,7 +3,6 @@ package main
 import (
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -61,8 +60,13 @@ func TestHandleOAuthStart_UsesWorkBuddyDesktopProfile(t *testing.T) {
 	if got := u.Query().Get("version"); got != "5.3.14" {
 		t.Fatalf("version = %q, want 5.3.14", got)
 	}
-	if got := u.Query().Get("loginSessionId"); !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(got) {
-		t.Fatalf("loginSessionId = %q, want 32 lowercase hex characters", got)
+	// ★ loginSessionId must NOT be added. Upstream's authUrl carries only
+	// platform+state, the desktop client's own URL carries only
+	// platform+state+version, and the parameter is consumed by the page purely as
+	// an OpenTelemetry trace id. The plugin used to invent it; that made our URL
+	// differ from the official client's for no functional gain.
+	if got := u.Query().Get("loginSessionId"); got != "" {
+		t.Fatalf("loginSessionId = %q, want it absent (upstream and the desktop client both omit it)", got)
 	}
 
 	state, _ := res["state"].(string)
@@ -73,9 +77,6 @@ func TestHandleOAuthStart_UsesWorkBuddyDesktopProfile(t *testing.T) {
 	lc := stored.(*loginCtx)
 	if lc.profile.mode != oauthClientModeWorkBuddy {
 		t.Fatalf("login profile = %q, want %q", lc.profile.mode, oauthClientModeWorkBuddy)
-	}
-	if lc.loginSessionID != u.Query().Get("loginSessionId") {
-		t.Fatalf("stored loginSessionId = %q, URL has %q", lc.loginSessionID, u.Query().Get("loginSessionId"))
 	}
 	t.Cleanup(func() { loginStates.Delete(state) })
 }

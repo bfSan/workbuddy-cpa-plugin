@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -66,7 +65,7 @@ func TestWorkBuddyProfileBuildsDesktopStateRequest(t *testing.T) {
 
 func TestDecorateDesktopAuthURLPreservesBrowserQuery(t *testing.T) {
 	// CN client version: the historical value, which must not change for CN.
-	got, err := decorateDesktopAuthURL("https://example.test/login?state=s", "0123456789abcdef0123456789abcdef", loginVersionCN)
+	got, err := decorateDesktopAuthURL("https://example.test/login?state=s", loginVersionCN)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +73,7 @@ func TestDecorateDesktopAuthURLPreservesBrowserQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.Query().Get("state") != "s" || u.Query().Get("version") != "5.3.14" || u.Query().Get("loginSessionId") != "0123456789abcdef0123456789abcdef" {
+	if u.Query().Get("state") != "s" || u.Query().Get("version") != "5.3.14" {
 		t.Fatalf("query = %v", u.Query())
 	}
 }
@@ -127,16 +126,20 @@ func TestDesktopLoginKeepsStartProfileAndSessionAcrossReconfigure(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	loginSessionID := browserURL.Query().Get("loginSessionId")
-	if browserURL.Query().Get("state") != "original" || browserURL.Query().Get("version") != "5.3.14" || !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(loginSessionID) {
+	// The browser URL must match what upstream returned plus the client version:
+	// no invented loginSessionId (see the panel test for why).
+	if browserURL.Query().Get("state") != "original" || browserURL.Query().Get("version") != "5.3.14" {
 		t.Fatalf("desktop browser URL = %q", start.URL)
+	}
+	if got := browserURL.Query().Get("loginSessionId"); got != "" {
+		t.Fatalf("desktop browser URL carries loginSessionId=%q; upstream does not send one", got)
 	}
 	loginState, ok := loginStates.Load("desktop-login-snapshot")
 	if !ok {
 		t.Fatal("login context was not stored")
 	}
 	lc := loginState.(*loginCtx)
-	if lc.profile.mode != oauthClientModeWorkBuddy || lc.loginSessionID != loginSessionID {
+	if lc.profile.mode != oauthClientModeWorkBuddy {
 		t.Fatalf("login context = %#v", lc)
 	}
 	t.Cleanup(func() { loginStates.Delete("desktop-login-snapshot") })

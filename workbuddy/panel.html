@@ -1573,7 +1573,11 @@ async function startOAuthLogin(btn,region){
     }
     oauthState=d.state;
     oauthURL=d.url;
-    const seconds=Math.max(1,Number(d.expiresIn)||300);
+    // Fallback only: the server owns this window (loginTTL, currently 30 min) and
+    // sends it as expiresIn. The old literal here was 300, matching the previous
+    // 5-minute server value, and would have re-imposed the too-short deadline
+    // whenever the server reply omitted the field.
+    const seconds=Math.max(1,Number(d.expiresIn)||1800);
     oauthDeadline=Date.now()+seconds*1000;
     document.getElementById("oauthUrl").value=d.url;
     oauthStatusText("请在浏览器完成登录，本页会自动检测。");

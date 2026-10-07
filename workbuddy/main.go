@@ -109,17 +109,34 @@ const (
 	endpointTokenRefresh = upstreamBaseCN + "/v2/plugin/auth/token/refresh"
 	endpointChat         = upstreamBaseCN + "/v2/chat/completions"
 
-	loginTTL = 5 * time.Minute
+	// loginTTL bounds how long a started-but-unfinished login flow stays usable.
+	//
+	// It was 5 minutes, which is shorter than a real international sign-in. That
+	// flow leaves our page for Keycloak (openid-connect/auth) and can come back
+	// through an enterprise-WeChat authorisation round trip, so the operator may
+	// reasonably take longer than five minutes — and when they did, the plugin
+	// declared the session expired while upstream still considered it live. The
+	// panel then reported a failed login for a sign-in that was still in flight,
+	// and no account appeared.
+	//
+	// Measured 2026-10-08 against www.workbuddy.ai: a state issued by auth/state
+	// still answered auth/token with 11217 "login ing..." well past the old
+	// deadline, and upstream answers that way even for a state it has never seen.
+	// So upstream publishes no usable expiry signal here and the local value is
+	// the only deadline in play; it must be generous enough not to cut a real
+	// sign-in short. The stored context is tiny and is dropped on first use, on
+	// completion, and on any poll after expiry, so a longer window costs nothing
+	// but a few idle bytes.
+	loginTTL = 30 * time.Minute
 )
 
 // loginCtx holds the cookie-affined HTTP client for one in-flight login flow.
 // CodeBuddy associates the browser login with the state issued at auth/state,
 // so we must reuse the same cookie jar across the state request and the polls.
 type loginCtx struct {
-	client         *http.Client
-	expires        time.Time
-	profile        oauthRequestProfile
-	loginSessionID string
+	client  *http.Client
+	expires time.Time
+	profile oauthRequestProfile
 }
 
 var (
@@ -344,7 +361,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.13"
+var version = "0.9.14"
 
 func wbRegistration() registration {
 	return registration{

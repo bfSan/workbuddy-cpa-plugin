@@ -1,9 +1,11 @@
 package main
 
 import (
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -213,12 +215,11 @@ func TestGlobalLoginUsesTheInternationalSurface(t *testing.T) {
 // CN version, so even a correct stateURL produced a Global URL advertising a CN
 // client.
 func TestDecorateAuthURLCarriesRealmClientVersion(t *testing.T) {
-	const sid = "0123456789abcdef0123456789abcdef"
 	for _, tc := range []struct{ version, raw string }{
 		{loginVersionCN, "https://www.workbuddy.cn/login?platform=workbuddy&state=s"},
 		{loginVersionGlobal, "https://www.workbuddy.ai/login?platform=workbuddy-ai&state=s"},
 	} {
-		got, err := decorateDesktopAuthURL(tc.raw, sid, tc.version)
+		got, err := decorateDesktopAuthURL(tc.raw, tc.version)
 		if err != nil {
 			t.Fatalf("decorate(%s): %v", tc.version, err)
 		}
@@ -229,8 +230,10 @@ func TestDecorateAuthURLCarriesRealmClientVersion(t *testing.T) {
 		if u.Query().Get("version") != tc.version {
 			t.Errorf("version = %q, want %q", u.Query().Get("version"), tc.version)
 		}
-		if u.Query().Get("loginSessionId") != sid {
-			t.Errorf("loginSessionId missing for %s", tc.version)
+		// loginSessionId must stay absent: upstream never sends one, and the plugin
+		// must not invent parameters the official client does not use.
+		if got := u.Query().Get("loginSessionId"); got != "" {
+			t.Errorf("loginSessionId = %q, want absent", got)
 		}
 		// The platform upstream chose must survive untouched: overwriting it here
 		// could contradict the state the backend just minted.
@@ -244,5 +247,80 @@ func TestDecorateAuthURLCarriesRealmClientVersion(t *testing.T) {
 		if u.Query().Get("state") != "s" {
 			t.Errorf("state lost: %q", u.Query().Get("state"))
 		}
+	}
+}
+
+// TestLoginWindowOutlastsARealInternationalSignIn pins the third and last cause
+// of "logged in but no account was captured".
+//
+// The realm routing and the surface parameters were both right, and the sign-in
+// still reported failure. The reason was the clock: loginTTL was 5 minutes, but
+// an international sign-in leaves our page for Keycloak and can return through an
+// enterprise-WeChat authorisation round trip, which routinely takes longer. The
+// plugin declared the session expired while upstream still considered it live, so
+// the panel showed a failure for a sign-in that was still in progress.
+//
+// Upstream offers no expiry signal to defer to: measured 2026-10-08, auth/token
+// answers 11217 "login ing..." long past the old deadline and answers the same
+// way for a state it has never issued. The local window is therefore the only
+// deadline, and it must not be shorter than a plausible human sign-in.
+func TestLoginWindowOutlastsARealInternationalSignIn(t *testing.T) {
+	if loginTTL < 15*time.Minute {
+		t.Errorf("loginTTL = %s; an international sign-in (Keycloak + possible WeChat round trip) exceeded the previous 5m window, so anything short of 15m risks repeating it", loginTTL)
+	}
+	// Guard the other direction too: an unbounded window would keep dead sessions
+	// in memory forever.
+	if loginTTL > 2*time.Hour {
+		t.Errorf("loginTTL = %s is unreasonably long for an in-memory login context", loginTTL)
+	}
+}
+
+// TestPanelLoginFallbackMatchesServerWindow keeps the panel's fallback from
+// re-imposing a shorter deadline than the server's.
+//
+// The literal is only used when the server reply omits expiresIn, so a stale
+// value is invisible until that happens — which is exactly when it would be
+// blamed on something else. It previously hardcoded 300s.
+func TestPanelLoginFallbackMatchesServerWindow(t *testing.T) {
+	html := string(servePanel(""))
+	if strings.Contains(html, "Number(d.expiresIn)||300") {
+		t.Error("panel still falls back to the old 300s window, which is shorter than loginTTL")
+	}
+	if !strings.Contains(html, "Number(d.expiresIn)||1800") {
+		t.Error("panel must fall back to a window that matches loginTTL")
+	}
+	// The deadline check itself must still exist: this test is about the value,
+	// not about removing the guard.
+	if !strings.Contains(html, "Date.now()>=oauthDeadline") {
+		t.Error("the expiry guard must stay; only its window changed")
+	}
+}
+
+// TestLoginTTLReachesThePanelResponse checks the value actually travels to the
+// client, since the panel counts down from expiresIn rather than from its own
+// constant.
+func TestLoginTTLReachesThePanelResponse(t *testing.T) {
+	// The start path also needs a non-proxied routing state, or it fails before
+	// reaching the client.
+	oldProxy := currentProxyState()
+	proxyState.Store(&proxyRoutingState{mode: proxyModeInherit})
+	t.Cleanup(func() { proxyState.Store(oldProxy) })
+
+	oldClient := sharedHTTPClient()
+	sharedClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return testHTTPResponse(req, `{"code":0,"data":{"state":"s1","authUrl":"https://www.workbuddy.ai/login?platform=workbuddy-ai&state=s1"}}`), nil
+	})}
+	t.Cleanup(func() { sharedClient = oldClient })
+
+	res := handleOAuthStart(pluginapi.ManagementRequest{Body: []byte(`{"region":"global"}`)})
+	if ok, _ := res["success"].(bool); !ok {
+		t.Fatalf("start failed: %+v", res)
+	}
+	got, _ := res["expiresIn"].(int)
+	if got == 0 {
+		t.Fatal("expiresIn missing; the panel would fall back to its own constant")
+	}
+	if int(loginTTL.Seconds()) != got {
+		t.Errorf("expiresIn = %ds, want %ds (loginTTL)", got, int(loginTTL.Seconds()))
 	}
 }

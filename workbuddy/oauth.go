@@ -113,7 +113,31 @@ type oauthRequestProfile struct {
 	// the same realm. Splitting them mints a token that the other realm's
 	// /login/account will not honour, so the account never materialises.
 	base string
+	// platform and clientVersion are echoed in the auth/state query and then in
+	// the browser URL the login page reads. They are NOT cosmetic: upstream
+	// returns a different authUrl per platform, and the page uses those values to
+	// pick which sign-in flow to render. CN and the international realm expect
+	// different ones, so a Global login built with the CN pair lands on a page
+	// that renders the marketing shell instead of a sign-in prompt.
+	platform      string
+	clientVersion string
 }
+
+// Login surface parameters, per realm.
+//
+// CN: platform=workbuddy, client 5.3.14 — the values the CN portal has always
+// used, kept as the default so nothing that worked changes.
+// Global: platform=workbuddy-ai, client 5.7.6 — what the desktop client sends.
+// Confirmed against the live upstream 2026-10-08: auth/state echoes the platform
+// back in its authUrl (platform=workbuddy vs platform=workbuddy-ai), and the
+// Global page only reaches its sign-in branch (/console/auth/risk-context) with
+// the workbuddy-ai platform and the newer client version.
+const (
+	loginPlatformCN     = "workbuddy"
+	loginPlatformGlobal = "workbuddy-ai"
+	loginVersionCN      = "5.3.14"
+	loginVersionGlobal  = "5.7.6"
+)
 
 // oauthLoginRegion selects which upstream realm a NEW login targets. CN is the
 // default: every existing install and every stored auth file predates the
@@ -153,27 +177,33 @@ func oauthProfileForModeRegion(mode, region string) oauthRequestProfile {
 		// which is why origin and base are chosen together rather than one of them.
 		if normalizeOAuthLoginRegion(region) == oauthLoginRegionGlobal {
 			return oauthRequestProfile{
-				mode:      oauthClientModeWorkBuddy,
-				stateURL:  upstreamBaseGlobal + "/v2/plugin/auth/state?platform=workbuddy",
-				userAgent: workBuddyDesktopUA,
-				origin:    originRefererGlobal,
-				base:      upstreamBaseGlobal,
+				mode:          oauthClientModeWorkBuddy,
+				stateURL:      upstreamBaseGlobal + "/v2/plugin/auth/state?platform=" + loginPlatformGlobal,
+				userAgent:     workBuddyDesktopUA,
+				origin:        originRefererGlobal,
+				base:          upstreamBaseGlobal,
+				platform:      loginPlatformGlobal,
+				clientVersion: loginVersionGlobal,
 			}
 		}
 		return oauthRequestProfile{
-			mode:      oauthClientModeWorkBuddy,
-			stateURL:  upstreamBaseCN + "/v2/plugin/auth/state?platform=workbuddy",
-			userAgent: workBuddyDesktopUA,
-			origin:    "https://www.workbuddy.cn",
-			base:      upstreamBaseCN,
+			mode:          oauthClientModeWorkBuddy,
+			stateURL:      upstreamBaseCN + "/v2/plugin/auth/state?platform=" + loginPlatformCN,
+			userAgent:     workBuddyDesktopUA,
+			origin:        "https://www.workbuddy.cn",
+			base:          upstreamBaseCN,
+			platform:      loginPlatformCN,
+			clientVersion: loginVersionCN,
 		}
 	}
 	return oauthRequestProfile{
-		mode:      oauthClientModeCLI,
-		stateURL:  endpointAuthState,
-		userAgent: clientUA,
-		origin:    originReferer,
-		base:      upstreamBaseCN,
+		mode:          oauthClientModeCLI,
+		stateURL:      endpointAuthState,
+		userAgent:     clientUA,
+		origin:        originReferer,
+		platform:      loginPlatformCN,
+		clientVersion: loginVersionCN,
+		base:          upstreamBaseCN,
 	}
 }
 
@@ -276,13 +306,27 @@ func buildTokenRefreshRequest(profile oauthRequestProfile, sa *storedAuth) (*htt
 	return req, nil
 }
 
-func decorateDesktopAuthURL(rawURL, loginSessionID string) (string, error) {
+// decorateDesktopAuthURL adds the desktop client markers the login page expects.
+//
+// clientVersion comes from the profile rather than a constant here: the two
+// realms ship different client versions, and the page consults this value when
+// choosing its sign-in branch. It was hardcoded to the CN version, which is part
+// of why a Global login landed on the marketing shell.
+//
+// platform is deliberately NOT re-set: upstream already put the right one in
+// authUrl (it echoes the platform the auth/state call asked for). Overwriting it
+// here would risk contradicting the state the backend just minted.
+func decorateDesktopAuthURL(rawURL, loginSessionID, clientVersion string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", err
 	}
 	query := u.Query()
-	query.Set("version", "5.3.14")
+	if clientVersion != "" {
+		query.Set("version", clientVersion)
+	} else {
+		query.Set("version", loginVersionCN)
+	}
 	query.Set("loginSessionId", loginSessionID)
 	u.RawQuery = query.Encode()
 	return u.String(), nil
@@ -329,7 +373,7 @@ func startLoginWithModeRegion(mode, region string) ([]byte, error) {
 	loginSessionID := ""
 	if profile.mode == oauthClientModeWorkBuddy {
 		loginSessionID = randomHex(16)
-		st.AuthURL, err = decorateDesktopAuthURL(st.AuthURL, loginSessionID)
+		st.AuthURL, err = decorateDesktopAuthURL(st.AuthURL, loginSessionID, profile.clientVersion)
 		if err != nil {
 			return nil, fmt.Errorf("auth state: invalid authUrl: %w", err)
 		}

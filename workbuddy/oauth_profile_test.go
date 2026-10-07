@@ -65,7 +65,8 @@ func TestWorkBuddyProfileBuildsDesktopStateRequest(t *testing.T) {
 }
 
 func TestDecorateDesktopAuthURLPreservesBrowserQuery(t *testing.T) {
-	got, err := decorateDesktopAuthURL("https://example.test/login?state=s", "0123456789abcdef0123456789abcdef")
+	// CN client version: the historical value, which must not change for CN.
+	got, err := decorateDesktopAuthURL("https://example.test/login?state=s", "0123456789abcdef0123456789abcdef", loginVersionCN)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -164,3 +164,85 @@ func TestCLIProfileKeepsHistoricalEndpoints(t *testing.T) {
 		t.Errorf("empty base: login/account = %q, want the CN default %q", got, endpointLoginAcct)
 	}
 }
+
+// TestGlobalLoginUsesTheInternationalSurface pins the second half of the
+// international-login fix, and the reason the first attempt still failed.
+//
+// Making the login realm-aware was not enough: the CN surface parameters came
+// along for the ride. auth/state echoes the platform back inside its authUrl, and
+// the login page uses that platform plus the client version to choose which
+// sign-in flow to render. Asking for platform=workbuddy on the Global host
+// returned a page that showed the marketing shell — the operator saw a homepage
+// instead of a sign-in prompt — and the session could never complete, so no
+// account was captured.
+//
+// Verified against the live upstream 2026-10-08: the two platform values produce
+// different authUrls, and only platform=workbuddy-ai with client 5.7.6 reaches
+// the Global sign-in branch.
+func TestGlobalLoginUsesTheInternationalSurface(t *testing.T) {
+	cn := oauthProfileForModeRegion(oauthClientModeWorkBuddy, oauthLoginRegionCN)
+	if cn.platform != loginPlatformCN || cn.clientVersion != loginVersionCN {
+		t.Errorf("CN surface = %q/%q, want %q/%q", cn.platform, cn.clientVersion, loginPlatformCN, loginVersionCN)
+	}
+	if !strings.Contains(cn.stateURL, "platform="+loginPlatformCN) {
+		t.Errorf("CN state URL %q must request the CN platform", cn.stateURL)
+	}
+
+	gl := oauthProfileForModeRegion(oauthClientModeWorkBuddy, oauthLoginRegionGlobal)
+	if gl.platform != loginPlatformGlobal {
+		t.Errorf("Global platform = %q, want %q", gl.platform, loginPlatformGlobal)
+	}
+	if gl.clientVersion != loginVersionGlobal {
+		t.Errorf("Global client version = %q, want %q", gl.clientVersion, loginVersionGlobal)
+	}
+	if !strings.Contains(gl.stateURL, "platform="+loginPlatformGlobal) {
+		t.Errorf("Global state URL %q must request platform=%s", gl.stateURL, loginPlatformGlobal)
+	}
+	// The two realms must not share a surface: identical values are what made the
+	// Global page render as a homepage.
+	if cn.platform == gl.platform {
+		t.Error("both realms request the same platform; the Global page cannot tell them apart")
+	}
+	if cn.clientVersion == gl.clientVersion {
+		t.Error("both realms send the same client version")
+	}
+}
+
+// TestDecorateAuthURLCarriesRealmClientVersion pins that the version the browser
+// actually receives follows the realm. decorateDesktopAuthURL used to hardcode the
+// CN version, so even a correct stateURL produced a Global URL advertising a CN
+// client.
+func TestDecorateAuthURLCarriesRealmClientVersion(t *testing.T) {
+	const sid = "0123456789abcdef0123456789abcdef"
+	for _, tc := range []struct{ version, raw string }{
+		{loginVersionCN, "https://www.workbuddy.cn/login?platform=workbuddy&state=s"},
+		{loginVersionGlobal, "https://www.workbuddy.ai/login?platform=workbuddy-ai&state=s"},
+	} {
+		got, err := decorateDesktopAuthURL(tc.raw, sid, tc.version)
+		if err != nil {
+			t.Fatalf("decorate(%s): %v", tc.version, err)
+		}
+		u, err := url.Parse(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u.Query().Get("version") != tc.version {
+			t.Errorf("version = %q, want %q", u.Query().Get("version"), tc.version)
+		}
+		if u.Query().Get("loginSessionId") != sid {
+			t.Errorf("loginSessionId missing for %s", tc.version)
+		}
+		// The platform upstream chose must survive untouched: overwriting it here
+		// could contradict the state the backend just minted.
+		wantPlatform := "workbuddy"
+		if strings.Contains(tc.raw, "workbuddy-ai") {
+			wantPlatform = loginPlatformGlobal
+		}
+		if u.Query().Get("platform") != wantPlatform {
+			t.Errorf("platform = %q, want %q preserved from authUrl", u.Query().Get("platform"), wantPlatform)
+		}
+		if u.Query().Get("state") != "s" {
+			t.Errorf("state lost: %q", u.Query().Get("state"))
+		}
+	}
+}

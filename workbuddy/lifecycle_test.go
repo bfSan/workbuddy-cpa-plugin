@@ -86,8 +86,11 @@ func TestLifecycleActionFor(t *testing.T) {
 		cr     *creditsSummary
 		want   lifecycleAction
 	}{
-		{"cn exhausted", "cn", ex, lifecycleDisable},
-		{"global exhausted", "global", ex, lifecycleDelete},
+		// Exhausted credits no longer disable or delete: rate-0 models (hy3,
+		// hy3-b, hy3-c) stay callable on a drained credential, so the account
+		// must be left enabled. See lifecycleActionFor.
+		{"cn exhausted stays enabled", "cn", ex, lifecycleNone},
+		{"global exhausted stays enabled", "global", ex, lifecycleNone},
 		{"cn ok", "cn", ok, lifecycleNone},
 		{"global ok", "global", ok, lifecycleNone},
 		{"unknown", "cn", nil, lifecycleNone},
@@ -99,18 +102,64 @@ func TestLifecycleActionFor(t *testing.T) {
 	}
 }
 
+// TestLifecycleActionForExhaustedKeepsFreeModelsAvailable states the user-visible
+// contract behind the case above: with zero credits the credential is still
+// usable, so a rate-0 model can be served. Previously the whole auth was disabled
+// and every model — free ones included — answered auth_unavailable.
+func TestLifecycleActionForExhaustedKeepsFreeModelsAvailable(t *testing.T) {
+	drained := &creditsSummary{TotalRemain: 0, TotalUsed: 5646, TotalSize: 5646}
+	for _, region := range []string{"cn", "global"} {
+		if got := lifecycleActionFor(region, drained); got != lifecycleNone {
+			t.Fatalf("%s: exhausted credits must not disable the account (got %v)", region, got)
+		}
+	}
+}
+
 func TestShouldReenableCN(t *testing.T) {
-	if shouldReenableCN(false, &creditsSummary{TotalRemain: 10}) {
+	drained := &creditsSummary{TotalRemain: 0, TotalUsed: 5}
+	able := &creditsSummary{TotalRemain: 3}
+	deadNote := "Session dead (12153): re-login required"
+
+	if shouldReenableCN(false, able, "", "") {
 		t.Fatal("enabled account should not reenable")
 	}
-	if shouldReenableCN(true, nil) {
-		t.Fatal("unknown credits must not reenable")
+	// No recorded reason and no readable balance: cannot tell a drained account
+	// from a broken one, so leave it disabled.
+	if shouldReenableCN(true, nil, "", "") {
+		t.Fatal("unknown credits with no disable reason must not reenable")
 	}
-	if shouldReenableCN(true, &creditsSummary{TotalRemain: 0, TotalUsed: 5}) {
-		t.Fatal("exhausted must not reenable")
+
+	// ★ Recorded reason, the authoritative path.
+	// exhausted: the reason was retired, so the account must come back — even with
+	// zero credits and even if the balance cannot be read, because otherwise it
+	// stays parked forever (nothing can spend, so the balance never moves).
+	if !shouldReenableCN(true, drained, disableReasonExhausted, "") {
+		t.Fatal("a credit-disabled account must be revived: exhaustion no longer blocks it")
 	}
-	if !shouldReenableCN(true, &creditsSummary{TotalRemain: 3}) {
-		t.Fatal("disabled + remain should reenable")
+	if !shouldReenableCN(true, nil, disableReasonExhausted, "") {
+		t.Fatal("an exhausted account must be revived even when the balance is unreadable")
+	}
+	// session_dead: the credential itself is invalid, so reviving it would push a
+	// known-bad credential back into rotation.
+	if shouldReenableCN(true, able, disableReasonSessionDead, "") {
+		t.Fatal("a session-dead account must stay disabled until re-login")
+	}
+	if shouldReenableCN(true, nil, disableReasonSessionDead, "") {
+		t.Fatal("a session-dead account must stay disabled even without credits")
+	}
+
+	// ★ No recorded reason: pre-upgrade accounts, where the note is the only
+	// evidence left. Consulted here and nowhere else, since syncAuthNote rewrites
+	// the note on every reconcile.
+	if !shouldReenableCN(true, drained, "", "CN · 已禁用 · 耗尽 · 余0 已用5") {
+		t.Fatal("an account parked by the old exhaustion rule must still be rescued via its note")
+	}
+	if shouldReenableCN(true, able, "", deadNote) {
+		t.Fatal("an account parked for a dead session must stay disabled even without the field")
+	}
+	// No reason, no marker, balance readable: nothing says it must stay parked.
+	if !shouldReenableCN(true, able, "", "") {
+		t.Fatal("disabled + readable balance + no reason should reenable")
 	}
 }
 
@@ -402,13 +451,17 @@ func TestDeleteAuthFileInDir(t *testing.T) {
 }
 
 func TestLifecycleActionFor_IdempotentPolicy(t *testing.T) {
-	// Applying action twice with same inputs must stay disable/delete (not flip).
+	// Applying the decision twice with the same inputs must stay stable (nothing
+	// flips). Exhausted now maps to none in both regions — the credential stays
+	// enabled so rate-0 models keep working — and repeating it still yields none.
 	ex := &creditsSummary{TotalRemain: 0, TotalUsed: 1}
-	if lifecycleActionFor("cn", ex) != lifecycleDisable {
-		t.Fatal("cn")
-	}
-	if lifecycleActionFor("global", ex) != lifecycleDelete {
-		t.Fatal("global")
+	for i := 0; i < 2; i++ {
+		if lifecycleActionFor("cn", ex) != lifecycleNone {
+			t.Fatal("cn exhausted must stay enabled on every pass")
+		}
+		if lifecycleActionFor("global", ex) != lifecycleNone {
+			t.Fatal("global exhausted must stay enabled on every pass")
+		}
 	}
 	// Soft rate limit body never hard-credit alone.
 	if isHardCreditError(429, "too many requests") {
@@ -451,5 +504,66 @@ func TestListEntryMatchesUID(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%s: got %v want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestDisabledReasonFieldRoundTrips pins the field that replaced note sniffing:
+// lifecycle writes disabled_reason through buildAuthFileJSON's extra map and
+// reads it back with authFileDisabledReason. The note cannot carry this — every
+// reconcile rebuilds it via displayNoteWithPrev, which keeps only the region /
+// 已禁用 / credit segments — so the decision must never depend on parsing it.
+func TestDisabledReasonFieldRoundTrips(t *testing.T) {
+	sa := &storedAuth{Account: storedAccount{Nickname: "t"}, Auth: storedTokens{Domain: "www.codebuddy.cn"}}
+
+	for _, reason := range []string{disableReasonExhausted, disableReasonSessionDead} {
+		raw, err := buildAuthFileJSON(sa, true, "CN · 已禁用 · 余0 已用5", map[string]any{
+			"disabled_reason": reason,
+		})
+		if err != nil {
+			t.Fatalf("build %s: %v", reason, err)
+		}
+		if got := authFileDisabledReason(raw); got != reason {
+			t.Fatalf("disabled_reason round trip = %q, want %q", got, reason)
+		}
+		if !parseDisabledFromAuthJSON(raw) {
+			t.Fatalf("%s: auth must stay disabled", reason)
+		}
+	}
+
+	// A cleared reason (the re-enable path writes nil) must read back empty, so a
+	// revoked account cannot inherit a stale "exhausted" that would revive it.
+	cleared, err := buildAuthFileJSON(sa, false, "CN · 余3 已用5", map[string]any{"disabled_reason": nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := authFileDisabledReason(cleared); got != "" {
+		t.Fatalf("cleared disabled_reason = %q, want empty", got)
+	}
+
+	// An account written before the field existed has no key at all: empty, which
+	// shouldReenableCN treats as "fall back to the note".
+	legacy, err := buildAuthFileJSON(sa, true, "CN · 已禁用 · 余0 已用5", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := authFileDisabledReason(legacy); got != "" {
+		t.Fatalf("legacy auth without the field = %q, want empty", got)
+	}
+}
+
+// TestNoteRewriteDoesNotCarryDisableReason documents WHY the reason cannot live
+// in the note: syncAuthNote rebuilds it from the region/credit segments only, so
+// anything appended for the operator is dropped on the next reconcile. This is
+// the behaviour that made a note-based decision unsafe.
+func TestNoteRewriteDoesNotCarryDisableReason(t *testing.T) {
+	sa := &storedAuth{Auth: storedTokens{Domain: "www.codebuddy.cn"}}
+	withReason := "CN · 已禁用 · 余0 已用5 · 耗尽"
+	rewritten := displayNoteWithPrev(sa, &creditsSummary{TotalRemain: 0, TotalUsed: 5}, true, withReason)
+	if strings.Contains(rewritten, creditExhaustedNoteMarker) {
+		t.Logf("note still carries the marker (%q); even so, disabled_reason remains the authority", rewritten)
+	}
+	// The point: the note is not a reliable carrier, so the field exists.
+	if got := authFileDisabledReason([]byte(`{"note":"` + rewritten + `"}`)); got != "" {
+		t.Fatalf("a note must never be read as disabled_reason (got %q)", got)
 	}
 }

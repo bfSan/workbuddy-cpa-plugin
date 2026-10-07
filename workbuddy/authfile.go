@@ -159,6 +159,17 @@ func hostAuthPersistMigrate(name, path, legacyPath string, raw []byte) error {
 
 // buildAuthFileJSON produces host-save payload: nested storage + top-level metadata.
 // extra merges additional top-level keys (optional).
+//
+// ★ Fields the caller does not mention are inherited from base (the auth file as
+// it exists on disk). Without this, every rewrite silently dropped anything not
+// in the fixed key list: disabled_reason (written by the panel's 禁用 button and
+// by markSessionDead) survived only until the next syncAuthNote / rename / keepalive
+// pass, all of which rebuild the whole document. That is how a manual disable
+// lost its record and came back enabled after a reconcile.
+//
+// base may be nil (fresh file / test call sites): then behaviour is exactly the
+// old one. extra still wins over both base and the fixed keys, so an explicit
+// null in extra genuinely deletes a key (the 启用 path depends on that).
 
 var hostAuthSaveJSONFn = hostAuthSaveJSON
 
@@ -190,6 +201,16 @@ func hostAuthSaveJSON(name string, raw []byte) error {
 // lifecycleStateUnchanged avoids redundant saves when note/disabled unchanged.
 
 func buildAuthFileJSON(sa *storedAuth, disabled bool, note string, extra map[string]any) ([]byte, error) {
+	return buildAuthFileJSONFrom(sa, disabled, note, extra, nil)
+}
+
+// buildAuthFileJSONFrom is buildAuthFileJSON with a preserved base document.
+//
+// Callers that loaded the live file should pass it as base so unrelated fields
+// (disabled_reason, and anything a future version or the host adds) survive the
+// rewrite. Callers with no file to preserve pass nil and get the historical
+// behaviour.
+func buildAuthFileJSONFrom(sa *storedAuth, disabled bool, note string, extra map[string]any, base []byte) ([]byte, error) {
 	if sa == nil {
 		return nil, fmt.Errorf("nil storedAuth")
 	}
@@ -201,20 +222,37 @@ func buildAuthFileJSON(sa *storedAuth, disabled bool, note string, extra map[str
 	if err := json.Unmarshal(storage, &nested); err != nil {
 		return nil, err
 	}
-	out := map[string]any{
-		"type":     providerName,
-		"provider": providerName,
-		"logo":     pluginLogoURL,
-		"disabled": disabled,
-		"label":    labelForAuth(sa),
-		"note":     note,
-		"auth":     nested["auth"],
-		"account":  nested["account"],
+	out := map[string]any{}
+	// Inherit first: unknown top-level keys from disk are kept verbatim.
+	if len(base) > 0 {
+		var prior map[string]any
+		if json.Unmarshal(base, &prior) == nil {
+			for k, v := range prior {
+				out[k] = v
+			}
+		}
 	}
+	// Then the keys this function owns, which always reflect the arguments.
+	out["type"] = providerName
+	out["provider"] = providerName
+	out["logo"] = pluginLogoURL
+	out["disabled"] = disabled
+	out["label"] = labelForAuth(sa)
+	out["note"] = note
+	out["auth"] = nested["auth"]
+	out["account"] = nested["account"]
 	if email := displayEmailForAuth(sa); email != "" {
 		out["email"] = email
+	} else {
+		// Clearing an email must actually clear it, not resurrect the inherited one.
+		delete(out, "email")
 	}
 	for k, v := range extra {
+		if v == nil {
+			// An explicit null in extra means "remove this key".
+			delete(out, k)
+			continue
+		}
 		out[k] = v
 	}
 	return json.Marshal(out)

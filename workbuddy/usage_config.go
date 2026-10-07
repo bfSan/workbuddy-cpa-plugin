@@ -65,6 +65,7 @@ func configure(raw []byte) error {
 	nextCheckinAuto := true
 	nextLifecycleAuto := true
 	nextKeepaliveAuto := true
+	nextCatalogRefreshAuto := true
 	nextMgmtKey := ""
 	nextProxyURL := ""
 
@@ -98,6 +99,9 @@ func configure(raw []byte) error {
 	if value, ok := configScalars["token_keepalive"]; ok {
 		nextKeepaliveAuto = enabledConfigValue(value)
 	}
+	if value, ok := configScalars["model_refresh"]; ok {
+		nextCatalogRefreshAuto = enabledConfigValue(value)
+	}
 
 	nextProxyURL, err = parseProxyURLConfig(configYAML)
 	if err != nil {
@@ -124,6 +128,10 @@ func configure(raw []byte) error {
 	keepaliveAutoMu.Lock()
 	keepaliveAuto = nextKeepaliveAuto
 	keepaliveAutoMu.Unlock()
+
+	catalogRefreshAutoMu.Lock()
+	catalogRefreshAuto = nextCatalogRefreshAuto
+	catalogRefreshAutoMu.Unlock()
 
 	// management key: config_yaml > env > keep existing. Empty stays empty
 	// (plugin-layer auth disabled, host middleware still guards).
@@ -226,7 +234,7 @@ func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
 
 		expected := ""
 		switch key.Value {
-		case "checkin_auto", "lifecycle_auto", "token_keepalive":
+		case "checkin_auto", "lifecycle_auto", "token_keepalive", "model_refresh":
 			expected = "boolean"
 		case "usage_report_url", "usage_report_key", "management_key":
 			expected = "string"

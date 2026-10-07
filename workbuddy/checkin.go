@@ -43,17 +43,20 @@ func scheduledInCurrentHour(now time.Time, hours []int) bool {
 	return false
 }
 
-func scheduledActionsFor(now time.Time) (runCheckin, runKeepalive bool) {
-	return scheduledInCurrentHour(now, checkinHours), scheduledInCurrentHour(now, keepaliveHours)
+func scheduledActionsFor(now time.Time) (runCheckin, runKeepalive, runCatalogRefresh bool) {
+	return scheduledInCurrentHour(now, checkinHours),
+		scheduledInCurrentHour(now, keepaliveHours),
+		scheduledInCurrentHour(now, []int{catalogRefreshHour})
 }
 
 func nextCheckinTime(now time.Time) time.Time {
 	var earliest time.Time
-	// Consider both checkin and keepalive schedules so the timer wakes up for
-	// whichever fires first (e.g. 21:00 checkin vs 22:00 keepalive → 21:00 wins,
-	// then 22:00 keepalive fires on the next tick).
+	// Consider every schedule so the timer wakes up for whichever fires first
+	// (e.g. 21:00 checkin vs 22:00 keepalive → 21:00 wins, then 22:00 keepalive
+	// fires on the next tick, then 23:00 catalog refresh).
 	hours := append([]int{}, checkinHours...)
 	hours = append(hours, keepaliveHours...)
+	hours = append(hours, catalogRefreshHour)
 	for _, h := range hours {
 		t := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
 		if !t.After(now) {
@@ -75,12 +78,17 @@ func checkinLoop(stop chan struct{}) {
 			timer.Stop()
 			return
 		case <-timer.C:
-			runCheckin, runKeepalive := scheduledActionsFor(time.Now())
+			runCheckin, runKeepalive, runCatalogRefresh := scheduledActionsFor(time.Now())
 			if runCheckin {
 				runAutoCheckin()
 			}
 			if runKeepalive {
 				runTokenKeepalive()
+			}
+			if runCatalogRefresh {
+				// Last, so the check-in/keepalive ticks have settled before the
+				// multiplier the panel reads is re-discovered.
+				runScheduledCatalogRefresh()
 			}
 		}
 	}

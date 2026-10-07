@@ -197,6 +197,9 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/oauth/poll", Description: "Poll one OAuth login flow (body or query: state)."},
 			{Method: http.MethodPost, Path: base + "/accounts/rename", Description: "Set the display name of one account (body: {auth_index, name})."},
 			{Method: http.MethodPost, Path: base + "/accounts/delete", Description: "Delete one account so it can be re-registered (body: {auth_index})."},
+			{Method: http.MethodPost, Path: base + "/accounts/disabled", Description: "Manually enable or disable one account (body: {auth_index, disabled}). Manual state is not recorded as a disable reason, so creditors automation will not silently override it."},
+			{Method: http.MethodGet, Path: base + "/models/refresh-status", Description: "Last nightly upstream catalog refresh (per-model credit multipliers) plus its schedule and on/off state."},
+			{Method: http.MethodPost, Path: base + "/models/refresh-status", Description: "Trigger the same upstream catalog refresh on demand; returns the run summary."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "WorkBuddy", Description: "WorkBuddy dashboard: credits, check-in, plan, import."},
@@ -295,6 +298,12 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleAccountRename(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/accounts/delete":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleAccountDelete(req.ManagementRequest)))
+	case req.Method == http.MethodPost && path == base+"/accounts/disabled":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleAccountSetDisabled(req.ManagementRequest)))
+	case req.Method == http.MethodGet && path == base+"/models/refresh-status":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCatalogRefresh(false)))
+	case req.Method == http.MethodPost && path == base+"/models/refresh-status":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCatalogRefresh(true)))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }
@@ -386,7 +395,10 @@ func handleAccountRename(req pluginapi.ManagementRequest) map[string]any {
 	}
 	sa.Account.Nickname = strings.TrimSpace(body.Name)
 	note := displayNoteWithPrev(sa, nil, phys.Disabled, existingNoteCredits(authIndex))
-	raw, err := buildAuthFileJSON(sa, phys.Disabled, note, nil)
+	// Renaming must not disturb the parked state: pass the live file so
+	// disabled_reason survives (a manual park would otherwise be forgotten and
+	// undone by the next reconcile).
+	raw, err := buildAuthFileJSONFrom(sa, phys.Disabled, note, nil, phys.JSON)
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
@@ -397,6 +409,104 @@ func handleAccountRename(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{"status": "ok", "auth_index": authIndex, "name": sa.Account.Nickname, "warning": err.Error()}
 	}
 	return map[string]any{"status": "ok", "auth_index": authIndex, "name": sa.Account.Nickname}
+}
+
+// handleAccountSetDisabled turns one credential on or off by hand.
+//
+// Why this exists: the plugin decides disabled purely from credits, and that
+// automation is deliberately conservative (see lifecycleActionFor). An operator
+// still needs a direct switch — to park a credential that is misbehaving without
+// deleting it, or to bring one back that automation left parked. Without this
+// the only knobs were "wait for reconcile" and "delete and re-login".
+//
+// The manual decision IS persisted, in disabled_reason = "manual". That is what
+// makes it durable: on restart the plugin re-reads every auth file, and
+// shouldReenableCN refuses to revive an account carrying this reason, so a
+// disabled account comes back disabled. A manual ENABLE clears the field, which
+// is the only way the state returns to automation's control.
+//
+// Note the asymmetry with the failure reasons: "exhausted" itself now means
+// "revive me" (that reason was retired), while "manual" means "leave me alone".
+// Stamping a manual disable as "exhausted" would have had the opposite effect.
+func handleAccountSetDisabled(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		AuthIndex string `json:"auth_index"`
+		Disabled  *bool  `json:"disabled"`
+	}
+	if len(req.Body) > 0 {
+		_ = json.Unmarshal(req.Body, &body)
+	}
+	authIndex := strings.TrimSpace(body.AuthIndex)
+	if authIndex == "" {
+		authIndex = strings.TrimSpace(req.Query.Get("auth_index"))
+	}
+	if authIndex == "" {
+		return map[string]any{"error": "auth_index is required"}
+	}
+	disabled := body.Disabled
+	if disabled == nil {
+		// Fall back to a query/body scalar so the switch also works as a GET-style
+		// toggle (?disabled=true).
+		raw := strings.TrimSpace(req.Query.Get("disabled"))
+		if raw == "" {
+			return map[string]any{"error": "disabled is required"}
+		}
+		val := raw == "true" || raw == "1"
+		disabled = &val
+	}
+	phys, err := hostAuthGetPhysicalFn(authIndex)
+	if err != nil || phys == nil {
+		return map[string]any{"error": "account not found"}
+	}
+	sa, err := parseStored(phys.JSON)
+	if err != nil || sa == nil {
+		return map[string]any{"error": "stored auth is nil"}
+	}
+	next := *disabled
+	note := displayNoteWithPrev(sa, nil, next, existingNoteCredits(authIndex))
+	extra := map[string]any{}
+	if next {
+		// ★ Persist the manual intent. This is what makes the state survive a
+		// restart: on reload the plugin re-reads each auth file, and this field
+		// tells shouldReenableCN that the parked state was deliberate. Without it
+		// (e.g. writing null) the reason reads back empty, the legacy fallback
+		// sees a readable balance and no dead-session marker, and reconcile
+		// re-enables the account — the operator's disable would look like it
+		// worked, then quietly undo itself after the next tick or restart.
+		extra["disabled_reason"] = disableReasonManual
+	} else {
+		// Enabling is the explicit undo: clear the reason so it cannot be read as
+		// a stale failure later. null removes the key entirely.
+		extra["disabled_reason"] = nil
+	}
+	raw, err := buildAuthFileJSONFrom(sa, next, note, extra, phys.JSON)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	if err := hostAuthSaveJSONFn(strings.TrimSpace(phys.Name), raw); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	// The cached dashboard must not keep showing the old state.
+	accountCache.Delete(authIndex)
+	if id := strings.TrimSpace(sa.Account.UID); id != "" {
+		accountCache.Delete(id)
+	}
+	// The host only re-reads the auth file when its watcher fires; wait briefly so
+	// the panel's immediate reload reflects the change instead of a stale label.
+	warning := ""
+	if err := waitForRuntimeAuthLabel(authIndex, labelForAuth(sa), 3*time.Second); err != nil {
+		warning = err.Error()
+	}
+	out := map[string]any{
+		"status":     "ok",
+		"auth_index": authIndex,
+		"disabled":   next,
+		"label":      labelForAuth(sa),
+	}
+	if warning != "" {
+		out["warning"] = warning
+	}
+	return out
 }
 
 // handleAccountDelete removes one credential so a stuck account can be
@@ -549,7 +659,9 @@ func mutatingManagementPath(path string) bool {
 		base + "/keepalive",
 		base + "/models",
 		base + "/models/action",
-		base + "/models/context":
+		base + "/models/context",
+		base + "/models/refresh-status",
+		base + "/accounts/disabled":
 		return true
 	}
 	return false

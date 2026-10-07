@@ -470,6 +470,8 @@ function bindCardActions(root){
       else if(act==="cooldown-clear") clearCooldown(ev.currentTarget.getAttribute("data-auth-id")||idx, ev.currentTarget.getAttribute("data-model"), ev.currentTarget);
       else if(act==="rename") renameAccount(idx, ev.currentTarget.dataset.nick||"");
       else if(act==="delete") deleteAccount(idx, ev.currentTarget.dataset.nick||"该账号");
+      else if(act==="enable") setAccountDisabled(idx, false, ev.currentTarget.dataset.nick||"该账号", ev.currentTarget);
+      else if(act==="disable") setAccountDisabled(idx, true, ev.currentTarget.dataset.nick||"该账号", ev.currentTarget);
     });
   });
 }
@@ -489,6 +491,24 @@ async function deleteAccount(idx,nick){
     if(r&&r.error){toast(r.error);return}
     toast("已删除，可重新登录");await load(true);
   }catch(e){toast(e.message||String(e))}
+}
+// setAccountDisabled 手工停用/启用一个账号。禁用只挡住流量，凭证保留，与「删除」
+// 的区别是随时可以再启用。
+async function setAccountDisabled(idx, disabled, nick, btn){
+  const verb=disabled?"禁用":"启用";
+  const tip=disabled
+    ? `禁用账号「${nick}」？\n\n该账号将不再接收请求（凭证保留，可随时再启用）。\n自动生命周期不会覆盖这个手工状态。`
+    : `启用账号「${nick}」？\n\n恢复接收请求，并清除之前记录的禁用原因。`;
+  if(!confirm(tip)) return;
+  busy(btn,true);
+  try{
+    const r=await api("/accounts/disabled",{method:"POST",body:JSON.stringify({auth_index:idx,disabled})});
+    if(r&&r.error){toast(r.error);return}
+    if(r&&r.warning) toast("已"+verb+"（主机尚未刷新："+r.warning+"）");
+    else toast("已"+verb);
+    await load(true);
+  }catch(e){toast(e.message||String(e))}
+  finally{busy(btn,false)}
 }
 function card(a){
   const plan=(a.plan||"unknown").toLowerCase();
@@ -523,7 +543,12 @@ function card(a){
     return `<div class="cooldown-row"><span class="cd-model">${esc(model)}</span><span class="cd-left">${fmtLeft(left)}</span><button type="button" class="ftag" data-action="cooldown-clear" data-auth-index="${esc(a.auth_index)}" data-auth-id="${esc(a.auth_id||a.auth_index)}" data-model="${esc(model)}" aria-label="解除 ${esc(model)} 的冷却">解除</button></div>`;
   }).join("")+`</div>`:"";
   const nick=a.nickname||a.label||a.name||"该账号";
-  const manageBtn=`<button class="sec" data-action="rename" data-auth-index="${esc(a.auth_index)}" data-nick="${esc(a.nickname||"")}" title="重命名账号">重命名</button><button class="danger" data-action="delete" data-auth-index="${esc(a.auth_index)}" data-nick="${esc(nick)}" title="删除账号后可重新登录">删除</button>`;
+  // 手工启停：与自动生命周期脱钩。禁用不会写入 disabled_reason，避免被
+  // shouldReenableCN 当成「耗尽」而在下次 reconcile 时悄悄解禁；启用则清掉原因。
+  const toggleBtn=disabled
+    ? `<button class="sec" data-action="enable" data-auth-index="${esc(a.auth_index)}" data-nick="${esc(nick)}" title="重新启用该账号，恢复接收流量">启用</button>`
+    : `<button class="sec" data-action="disable" data-auth-index="${esc(a.auth_index)}" data-nick="${esc(nick)}" title="停用该账号，不再接收流量（凭证保留）">禁用</button>`;
+  const manageBtn=`<button class="sec" data-action="rename" data-auth-index="${esc(a.auth_index)}" data-nick="${esc(a.nickname||"")}" title="重命名账号">重命名</button>${toggleBtn}<button class="danger" data-action="delete" data-auth-index="${esc(a.auth_index)}" data-nick="${esc(nick)}" title="删除账号后可重新登录">删除</button>`;
   return `<div class="card" data-region="${region}" data-auth="${esc(a.auth_index)}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}</span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
@@ -820,6 +845,9 @@ async function clearCooldown(idx, model, btn){
 }
 const MODEL_SOURCE_LABEL={config:"配置覆盖",fresh:"上游实时",cache:"缓存",none:"未知"};
 let lastModels=[];
+// catalogKickStarted guards the one-shot first-load catalog discovery below, so
+// repeated renders cannot re-trigger it.
+let catalogKickStarted=false;
 
 // The forced read is the refresh button's whole purpose: without ?refresh=1 the
 // handler only re-unions snapshots captured when each account was first seen, so
@@ -836,6 +864,35 @@ async function fetchModels(refresh){
     // what we already have.
     if(lastModels.length>0){toast("刷新失败：仍显示缓存列表","err",String(e&&e.message||e));return null}
     throw e;
+  }
+}
+
+// kickCatalogDiscovery runs once, the first time a dashboard load reports that
+// no credential has a catalog yet.
+//
+// Why: the catalog is discovered through the host's model.for_auth callback,
+// which fires when CPA asks this plugin for a model list. Merely opening the
+// panel never causes that, so a freshly started CPA sat on 模型目录尚未初始化
+// until the operator pressed 刷新 by hand — the banner was accurate but never
+// self-corrected, and reloading did not help either. That is the slow/first-load
+// complaint this addresses.
+//
+// A single forced discovery populates every credential's snapshot, and it shares
+// the refresh button's implementation, so it restores the last good catalog when
+// upstream is unreachable. Failures stay quiet: the dashboard still renders and
+// the banner keeps reporting the truth.
+async function kickCatalogDiscovery(){
+  if(catalogKickStarted) return;
+  catalogKickStarted=true;
+  try{
+    const d=await fetchModels(true);
+    if(!d) return;
+    lastModels=(d&&d.models)||[];
+    if(d&&d.model_status) updateModelStatus(d.model_status);
+    if(typeof renderModels==="function") renderModels();
+  }catch(_){
+    // Best effort: the banner already says the catalog is cold, and the 刷新
+    // button remains available.
   }
 }
 
@@ -1078,6 +1135,11 @@ async function load(force, btn){
       ? await api("/refresh", {method:"POST"})
       : await api("/accounts");
     updateModelStatus(d.model_status);
+    // Cold catalog on first dashboard load: trigger discovery ourselves instead
+    // of making the operator notice the banner and press 刷新. Runs in the
+    // background so the accounts still paint immediately.
+    const ms=d&&d.model_status;
+    if(ms&&ms.state!=="ready"&&ms.state!=="stale") kickCatalogDiscovery();
     if(force&&manualRefresh) loadEgressIP();
     document.getElementById("autoToggle").checked=!!d.checkin_auto;
     document.getElementById("svtime").textContent="服务器时间 "+(d.server_time||"");

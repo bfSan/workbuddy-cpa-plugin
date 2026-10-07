@@ -6,7 +6,7 @@
       "name": "WorkBuddy",
       "description": "Tencent CodeBuddy (WorkBuddy) OAuth provider for CLIProxyAPI: multi-account login, dynamic models, chat executor, CN daily check-in, Global one-shot expert trial (manual), credit lifecycle (disable CN / delete Global when exhausted), and a credits panel with CN/Global filters.",
       "author": "bfSan (workbuddy originally by Sliverkiss, based on workbuddy by lovingfish)",
-      "version": "0.9.6",
+      "version": "0.9.10",
       "repository": "https://github.com/bfSan/workbuddy-cpa-plugin",
       "logo": "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png",
       "homepage": "https://github.com/bfSan/workbuddy-cpa-plugin/tree/main/workbuddy",

@@ -82,8 +82,19 @@ func TestNextCheckinTime(t *testing.T) {
 		t.Fatalf("want 21, got %v", got.Hour())
 	}
 	// 22:00 → next day 09:00
+	// 22:00 → 23:00, the catalog-refresh slot added for the nightly multiplier
+	// update. It is the last slot of the day, so it wins over tomorrow's 09:00.
 	late := time.Date(2026, 7, 24, 22, 0, 0, 0, time.UTC)
 	got = nextCheckinTime(late)
+	if got.Hour() != 23 {
+		t.Fatalf("want 23, got %v", got.Hour())
+	}
+	if got.Day() != 24 {
+		t.Fatalf("want same day, got %v", got.Day())
+	}
+	// 23:30 → every slot today has passed, so tomorrow's 09:00.
+	night := time.Date(2026, 7, 24, 23, 30, 0, 0, time.UTC)
+	got = nextCheckinTime(night)
 	if got.Hour() != 9 {
 		t.Fatalf("want 9, got %v", got.Hour())
 	}

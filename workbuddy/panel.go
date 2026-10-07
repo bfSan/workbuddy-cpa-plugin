@@ -64,12 +64,23 @@ var modelStatusMessages = map[modelReadinessState]string{
 	modelNotStarted: "模型目录尚未初始化",
 }
 
+// modelStatePriority orders the aggregate by "how much the operator needs to
+// know". Among informative states the worst wins, but not_started deliberately
+// ranks BELOW ready: it means "this credential has not been exercised yet", not
+// "something is broken".
+//
+// It used to rank 3, above ready(1). With two accounts — one already serving a
+// fresh catalog, one never touched — the aggregate came out not_started and the
+// panel showed 模型目录尚未初始化 indefinitely, even though the catalog was
+// loaded and every model was callable. not_started is only the right thing to
+// report when it is the best any credential reached, so it must lose to every
+// informative state.
 var modelStatePriority = map[modelReadinessState]int{
+	modelNotStarted: 0,
 	modelReady:      1,
 	modelStale:      2,
-	modelNotStarted: 3,
-	modelLoading:    4,
-	modelFailed:     5,
+	modelLoading:    3,
+	modelFailed:     4,
 }
 
 var panelHostAuthList = hostAuthList
@@ -80,7 +91,10 @@ func buildModelStatus(files []pluginapi.HostAuthFileEntry) modelStatus {
 	if runtime != nil {
 		metadata = runtime.metadataStatus()
 	}
-	state := modelReady
+	// Start from the lowest-ranked state and let the loop raise it. Starting from
+	// modelReady would report "ready" whenever every credential is merely
+	// not_started, because not_started now ranks below ready.
+	state := modelNotStarted
 	if len(files) == 0 {
 		state = modelNotStarted
 	}

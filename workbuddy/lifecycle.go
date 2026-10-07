@@ -70,7 +70,13 @@ func pruneLifecycleState() {
 }
 
 // disableAuth writes disabled:true for a CN (or fallback) account.
-func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string) error {
+// disableAuth parks one credential.
+//
+// reason is the human-readable note tail (e.g. 耗尽); reasonCode is the machine
+// value persisted in disabled_reason, which is what shouldReenableCN later reads
+// to decide whether reviving the account is safe. Both are written together so
+// the note stays operator-friendly and the decision never depends on parsing it.
+func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason, reasonCode string) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
 	defer mu.Unlock()
@@ -99,7 +105,15 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 	if phys != nil {
 		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
 	}
-	raw, err := buildAuthFileJSON(sa, true, note, nil)
+	extra := map[string]any{}
+	if reasonCode != "" {
+		extra["disabled_reason"] = reasonCode
+	}
+	var base []byte
+	if phys != nil {
+		base = phys.JSON
+	}
+	raw, err := buildAuthFileJSONFrom(sa, true, note, extra, base)
 	if err != nil {
 		return err
 	}
@@ -112,12 +126,12 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 }
 
 // reenableAuth writes disabled:false when CN has credits again.
-func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) error {
+func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason, prevNote string) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
 	defer mu.Unlock()
 
-	if !shouldReenableCN(true, cr) {
+	if !shouldReenableCN(true, cr, reason, prevNote) {
 		return nil
 	}
 	note := displayNote(sa, cr, false)
@@ -131,7 +145,14 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 	if err == nil {
 		name, path, legacyPath = resolveAuthFileTarget(sa, phys)
 	}
-	raw, err := buildAuthFileJSON(sa, false, note, nil)
+	// Clear the reason: leaving a stale one behind would make the NEXT disable
+	// decision read a reason that no longer describes this credential's state.
+	extra := map[string]any{"disabled_reason": nil}
+	var base []byte
+	if phys != nil {
+		base = phys.JSON
+	}
+	raw, err := buildAuthFileJSONFrom(sa, false, note, extra, base)
 	if err != nil {
 		return err
 	}
@@ -172,7 +193,11 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 	if path == "" {
 		// Last resort: disable instead of silent no-op (never invent a random path).
 		note := displayNote(sa, nil, true) + " · 应删除但无 path"
-		raw, berr := buildAuthFileJSON(sa, true, note, nil)
+		// Tell shouldReenableCN why this account is parked, so automation does not
+		// keep trying to revive something that has no file to revive.
+		raw, berr := buildAuthFileJSON(sa, true, note, map[string]any{
+			"disabled_reason": disableReasonManual,
+		})
 		if berr != nil {
 			return fmt.Errorf("no path and build failed: %w", berr)
 		}
@@ -230,7 +255,9 @@ func applyExhaustedPolicy(authIndex, authID string, sa *storedAuth, cr *creditsS
 	case lifecycleDelete:
 		return deleteAuth(authIndex, authID, sa)
 	case lifecycleDisable:
-		return disableAuth(authIndex, authID, sa, cr, reason)
+		// reasonCode is what shouldReenableCN later reads to decide whether this
+		// account may come back; the human reason only decorates the note.
+		return disableAuth(authIndex, authID, sa, cr, reason, disableReasonExhausted)
 	default:
 		return nil
 	}
@@ -275,7 +302,14 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 	if lifecycleStateUnchanged(authID, disabled, note) {
 		return nil
 	}
-	raw, err := buildAuthFileJSON(sa, disabled, note, nil)
+	// ★ Pass the live file as base. This call runs on every reconcile, so a
+	// rewrite that dropped unmentioned fields would erase disabled_reason (manual
+	// parks and session-dead marks) on the next tick.
+	var base []byte
+	if phys != nil {
+		base = phys.JSON
+	}
+	raw, err := buildAuthFileJSONFrom(sa, disabled, note, nil, base)
 	if err != nil {
 		return err
 	}
@@ -346,8 +380,17 @@ func reconcileOneAccountWithCallback(authIndex, authID string, force bool, callb
 
 	region := accountRegion(sa)
 	if region == "cn" && disabled {
-		if shouldReenableCN(true, cr) {
-			if err := reenableAuth(authIndex, authID, sa, cr); err != nil {
+		// Why the account was parked decides whether reviving it is safe. The
+		// recorded field is authoritative; the note is a fallback for accounts
+		// disabled before that field existed (see shouldReenableCN).
+		prevNote := ""
+		prevReason := ""
+		if phys != nil {
+			prevNote = rawNoteFromJSON(phys.JSON)
+			prevReason = authFileDisabledReason(phys.JSON)
+		}
+		if shouldReenableCN(true, cr, prevReason, prevNote) {
+			if err := reenableAuth(authIndex, authID, sa, cr, prevReason, prevNote); err != nil {
 				return lifecycleReenable, err
 			}
 			return lifecycleReenable, nil
@@ -370,7 +413,7 @@ func reconcileOneAccountWithCallback(authIndex, authID string, force bool, callb
 		}
 		return lifecycleDelete, deleteAuth(authIndex, authID, sa)
 	case lifecycleDisable:
-		return lifecycleDisable, disableAuth(authIndex, authID, sa, cr, "耗尽")
+		return lifecycleDisable, disableAuth(authIndex, authID, sa, cr, "耗尽", disableReasonExhausted)
 	default:
 		// healthy: keep note fresh (throttled)
 		_ = syncAuthNote(authIndex, authID, sa, cr, false)

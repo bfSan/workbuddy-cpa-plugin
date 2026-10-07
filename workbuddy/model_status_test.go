@@ -113,12 +113,15 @@ func TestBuildModelStatusSerializesConfiguredCatalogSource(t *testing.T) {
 }
 
 func TestBuildModelStatusAggregationPriority(t *testing.T) {
+	// not_started ranks below ready: it means "never exercised", not "broken".
+	// Ranking it above ready made any untouched credential mask a loaded
+	// catalog (see TestBuildModelStatusReadyWinsOverNotStarted).
 	wantPriority := map[modelReadinessState]int{
+		modelNotStarted: 0,
 		modelReady:      1,
 		modelStale:      2,
-		modelNotStarted: 3,
-		modelLoading:    4,
-		modelFailed:     5,
+		modelLoading:    3,
+		modelFailed:     4,
 	}
 	if len(modelStatePriority) != len(wantPriority) {
 		t.Fatalf("priority count = %d, want %d", len(modelStatePriority), len(wantPriority))
@@ -138,7 +141,11 @@ func TestBuildModelStatusAggregationPriority(t *testing.T) {
 		{name: "zero auth", want: modelNotStarted, wantMessage: "模型目录尚未初始化"},
 		{name: "ready", states: []modelReadinessState{modelReady}, want: modelReady, wantMessage: "模型目录已就绪"},
 		{name: "stale over ready", states: []modelReadinessState{modelReady, modelStale}, want: modelStale, wantMessage: "模型目录刷新失败，正在使用上次有效缓存"},
-		{name: "not started over stale", states: []modelReadinessState{modelStale, modelNotStarted}, want: modelNotStarted, wantMessage: "模型目录尚未初始化"},
+		// not_started no longer masks a credential that has a catalog: it ranks
+		// lowest, so stale/ready both win over it.
+		{name: "stale over not started", states: []modelReadinessState{modelStale, modelNotStarted}, want: modelStale, wantMessage: "模型目录刷新失败，正在使用上次有效缓存"},
+		{name: "ready over not started", states: []modelReadinessState{modelNotStarted, modelReady}, want: modelReady, wantMessage: "模型目录已就绪"},
+		{name: "all not started stays not started", states: []modelReadinessState{modelNotStarted, modelNotStarted}, want: modelNotStarted, wantMessage: "模型目录尚未初始化"},
 		{name: "loading over not started", states: []modelReadinessState{modelNotStarted, modelLoading}, want: modelLoading, wantMessage: "模型目录正在初始化"},
 		{name: "failed over loading", states: []modelReadinessState{modelLoading, modelFailed}, want: modelFailed, wantMessage: "模型目录不可用"},
 	}
@@ -258,5 +265,42 @@ func TestDashboardDoesNotExposeManualSelectionFields(t *testing.T) {
 	}
 	if bytes.Contains(raw, []byte(`"selected"`)) {
 		t.Fatalf("account exposes selected: %s", raw)
+	}
+}
+
+// TestBuildModelStatusReadyWinsOverNotStarted pins the production bug seen on
+// 2026-10-06: two CN credentials, one already serving a fresh catalog
+// (models_fetched_at set) and one never exercised. The panel showed
+// 模型目录尚未初始化 indefinitely even though every model was callable.
+//
+// The cause was ordering, not readiness: not_started ranked above ready, so the
+// untouched credential masked the loaded one. The aggregate must report the
+// best state any credential reached whenever that state is informative.
+func TestBuildModelStatusReadyWinsOverNotStarted(t *testing.T) {
+	installModelStatesForTest(t, map[string]modelReadinessState{
+		"ready-account":     modelReady,
+		"untouched-account": modelNotStarted,
+	})
+	files := []pluginapi.HostAuthFileEntry{
+		{ID: "ready-account", AuthIndex: "account-ready"},
+		{ID: "untouched-account", AuthIndex: "account-untouched"},
+	}
+	got := buildModelStatus(files)
+	if got.State != modelReady {
+		t.Fatalf("state = %q, want %q (an untouched credential must not mask a loaded catalog)", got.State, modelReady)
+	}
+	if got.Message != "模型目录已就绪" {
+		t.Fatalf("message = %q, want 模型目录已就绪", got.Message)
+	}
+	// The per-account rows must still tell the truth about each credential.
+	byIndex := make(map[string]modelReadinessState, len(got.Auths))
+	for _, a := range got.Auths {
+		byIndex[a.AuthIndex] = a.State
+	}
+	if byIndex["account-untouched"] != modelNotStarted {
+		t.Errorf("untouched account state = %q, want not_started", byIndex["account-untouched"])
+	}
+	if byIndex["account-ready"] != modelReady {
+		t.Errorf("ready account state = %q, want ready", byIndex["account-ready"])
 	}
 }

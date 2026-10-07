@@ -200,6 +200,11 @@ func markSessionDead(authIndex, authID string, sa *storedAuth) error {
 	}
 	doc["disabled"] = true
 	doc["note"] = "Session dead (12153): re-login required"
+	// Record WHY, in the same field lifecycle uses. Without this an account
+	// parked here has no reason on file, so shouldReenableCN would have to fall
+	// back to reading the note — and reviving a dead session is precisely what
+	// must not happen.
+	doc["disabled_reason"] = disableReasonSessionDead
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		return err

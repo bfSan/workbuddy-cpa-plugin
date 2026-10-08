@@ -14,6 +14,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 	"time"
 
@@ -54,9 +55,30 @@ func handleOAuthStart(req pluginapi.ManagementRequest) map[string]any {
 	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
 		return map[string]any{"success": false, "error": "login start failed"}
 	}
+	// ★ The panel must not navigate to "url" as-is.
+	//
+	// The host HTML-escapes every string in a plugin management response before it
+	// reaches the browser (internal/pluginhost calls htmlsanitize.JSONBodyIfLikely,
+	// which runs html.EscapeString over the whole JSON document). A URL therefore
+	// arrives with its query separators rewritten from & to the literal characters
+	// "&amp;", and the browser reads that as a single nameless parameter: the state
+	// never reaches the login page, which lands on /login/started with an empty
+	// state and renders "Login Failed".
+	//
+	// Escaping inside a value is not something the plugin can switch off, so the
+	// panel is given the pieces instead: url_base carries no separator at all, and
+	// the parameters travel as a JSON object whose values are plain tokens (a
+	// platform name, a UUID state, a version) containing nothing the escaper
+	// touches. URLSearchParams re-encodes them on the way back out.
+	//
+	// "url" is kept for compatibility with anything still reading it, and the panel
+	// falls back to it — unescaping &amp; itself — when the pieces are absent.
+	base, params := splitLoginURL(env.Result.URL)
 	return map[string]any{
 		"success":   true,
 		"url":       env.Result.URL,
+		"url_base":  base,
+		"query":     params,
 		"state":     env.Result.State,
 		"expiresAt": env.Result.ExpiresAt.UTC().Format(time.RFC3339),
 		"expiresIn": int(time.Until(env.Result.ExpiresAt).Round(time.Second) / time.Second),
@@ -64,6 +86,29 @@ func handleOAuthStart(req pluginapi.ManagementRequest) map[string]any {
 		// so a silent fallback to CN is visible instead of assumed.
 		"region": region,
 	}
+}
+
+// splitLoginURL separates a login URL into a query-free base and its parameters.
+//
+// Returning the parts rather than one string lets the panel rebuild the URL with
+// URLSearchParams, which survives the host's HTML escaping of response strings —
+// see handleOAuthStart for why that matters. A URL that cannot be parsed comes
+// back with an empty base, and the caller falls back to the raw string.
+func splitLoginURL(raw string) (string, map[string]string) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", nil
+	}
+	params := make(map[string]string, len(u.Query()))
+	for key, values := range u.Query() {
+		if len(values) > 0 {
+			params[key] = values[0]
+		}
+	}
+	base := *u
+	base.RawQuery = ""
+	base.Fragment = ""
+	return base.String(), params
 }
 
 // handleOAuthPoll drives one poll of an in-flight flow. It is single-shot by

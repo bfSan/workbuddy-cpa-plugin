@@ -1484,6 +1484,32 @@ function closeOAuthModal(){
 function onOAuthMaskClick(e){
   if(e.target===document.getElementById("oauthModal")) closeOAuthModal();
 }
+// buildLoginURL assembles the address to open from the server's reply.
+//
+// ★ Do not just use d.url. The host HTML-escapes every string in a plugin
+// management response, so a URL arrives with its query separators written as the
+// literal characters "&amp;". The browser then treats "&amp;state=..." as one
+// nameless parameter, the state never reaches the login page, and the sign-in
+// ends on /login/started with an empty state showing "Login Failed".
+//
+// d.url_base carries no separator and d.query is an object, so the URL is rebuilt
+// here and URLSearchParams re-encodes each value on the way out. The old
+// string-only form still works as a fallback, with &amp; undone by hand, so an
+// older server that does not send the pieces keeps functioning.
+function buildLoginURL(d){
+  if(!d)return "";
+  if(d.url_base&&d.query){
+    try{
+      const u=new URL(d.url_base);
+      Object.entries(d.query).forEach(([k,v])=>{
+        if(Array.isArray(v)) v.forEach(x=>u.searchParams.append(k,String(x)));
+        else u.searchParams.set(k,String(v));
+      });
+      return u.toString();
+    }catch(_){}
+  }
+  return String(d.url||"").replace(/&amp;/g,"&");
+}
 function openOAuthURL(){
   if(!oauthURL)return;
   try{window.open(oauthURL,"_blank","noopener,noreferrer")}catch(_){}
@@ -1572,14 +1598,14 @@ async function startOAuthLogin(btn,region){
       if(t2) t2.textContent = d.region==="global" ? "OAuth 登录 · 国际账号（workbuddy.ai）" : "OAuth 登录 · CN 账号";
     }
     oauthState=d.state;
-    oauthURL=d.url;
+    oauthURL=buildLoginURL(d);
     // Fallback only: the server owns this window (loginTTL, currently 30 min) and
     // sends it as expiresIn. The old literal here was 300, matching the previous
     // 5-minute server value, and would have re-imposed the too-short deadline
     // whenever the server reply omitted the field.
     const seconds=Math.max(1,Number(d.expiresIn)||1800);
     oauthDeadline=Date.now()+seconds*1000;
-    document.getElementById("oauthUrl").value=d.url;
+    document.getElementById("oauthUrl").value=oauthURL;
     oauthStatusText("请在浏览器完成登录，本页会自动检测。");
     openOAuthURL();
     scheduleOAuthPoll(oauthPollGeneration);

@@ -143,17 +143,48 @@ func handleOAuthPoll(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{"success": false, "error": "login poll failed"}
 	}
 	status := string(env.Result.Status)
-	// The credential is already handed to the host on success; the panel only
-	// needs to know it can reload, so no auth payload is echoed back.
+	success := status == string(pluginapi.AuthLoginStatusSuccess)
 	nickname := ""
-	if env.Result.Auth.StorageJSON != nil && len(env.Result.Auth.StorageJSON) > 0 {
-		var sa storedAuth
-		if err := json.Unmarshal(env.Result.Auth.StorageJSON, &sa); err == nil {
-			nickname = strings.TrimSpace(sa.Account.Nickname)
+	// ★ On the panel path, persisting the credential is OUR job.
+	//
+	// handlePollLogin only RETURNS the credential. That is correct when the host
+	// drives auth.login.poll, because the host takes the returned AuthData and
+	// writes the auth file itself. The panel never goes through that RPC: it calls
+	// handlePollLogin directly, and the old code read the nickname out of the
+	// payload and dropped the rest — so a browser sign-in that genuinely succeeded
+	// showed "登录成功，账号已写入 CPA" while no file was ever written and the
+	// account appeared nowhere.
+	//
+	// The save therefore belongs here and not inside handlePollLogin: doing it
+	// there would double-write against the host's own WriteFile on the RPC path.
+	//
+	// A failed save must not be reported as success. The login really did happen
+	// upstream, so the message says so explicitly rather than the generic poll
+	// error, and keeps done=true so the panel stops polling instead of hanging on
+	// a login that cannot be retried by polling again.
+	if success {
+		if len(env.Result.Auth.StorageJSON) == 0 {
+			return map[string]any{"success": false, "status": status, "done": true,
+				"error": "login succeeded but upstream returned no credential to save"}
+		}
+		sa, errParse := parseStored(env.Result.Auth.StorageJSON)
+		if errParse != nil {
+			return map[string]any{"success": false, "status": status, "done": true,
+				"error": "login succeeded but the credential could not be read: " + errParse.Error()}
+		}
+		nickname = strings.TrimSpace(sa.Account.Nickname)
+		fileJSON, errBuild := buildAuthFileJSON(sa, false, displayNote(sa, nil, false), nil)
+		if errBuild != nil {
+			return map[string]any{"success": false, "status": status, "done": true,
+				"error": "login succeeded but the credential could not be encoded: " + errBuild.Error()}
+		}
+		if errSave := hostAuthSaveJSONFn(authFileNameFor(sa), fileJSON); errSave != nil {
+			return map[string]any{"success": false, "status": status, "done": true,
+				"error": "login succeeded but saving the account failed: " + errSave.Error()}
 		}
 	}
 	return map[string]any{
-		"success":  status == string(pluginapi.AuthLoginStatusSuccess),
+		"success":  success,
 		"status":   status,
 		"message":  env.Result.Message,
 		"nickname": nickname,

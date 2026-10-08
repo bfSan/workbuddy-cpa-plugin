@@ -1552,13 +1552,21 @@ async function pollOAuthLogin(generation){
     if(d.success){
       const who=d.nickname?"：" + d.nickname:"";
       oauthStatusText("登录成功"+who+"。账号已写入 CPA。","ok");
-      stopOAuthPolling();
+      // Close it. The operator's next action is on the account list, and a
+      // finished login dialog left open sits on top of the row just added; the
+      // toast below is what confirms the result once the modal is gone.
+      // closeOAuthModal also stops the polling, so no separate stop is needed.
+      closeOAuthModal();
       toast("OAuth 登录成功","ok",d.nickname||"WorkBuddy 账号已添加");
       await load(true);
       return;
     }
     if(d.done){
-      oauthStatusText(d.message||"登录失败，请重新获取登录链接。","err");
+      // d.error carries a terminal failure the server named (for example the
+      // browser sign-in worked but saving the credential did not). Reading only
+      // d.message here would flatten that into "登录失败" and send the operator
+      // off chasing a login that actually succeeded.
+      oauthStatusText(d.error||d.message||"登录失败，请重新获取登录链接。","err");
       stopOAuthPolling();
       return;
     }

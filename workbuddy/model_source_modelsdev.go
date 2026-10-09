@@ -205,6 +205,7 @@ func fetchModelsDevMetadata(etag, callbackID string, do modelHTTPDo) (modelsDevF
 }
 
 func cloneModelFacts(facts modelFacts) modelFacts {
+	facts = cloneModelThinkingFacts(facts)
 	facts.ContextLength = cloneInt64(facts.ContextLength)
 	facts.MaxCompletionTokens = cloneInt64(facts.MaxCompletionTokens)
 	facts.DefaultContextLength = cloneInt64(facts.DefaultContextLength)
@@ -250,6 +251,7 @@ func fillMissingModelFacts(dst *modelFacts, src modelFacts) {
 	if len(dst.SupportedOutputModalities) == 0 {
 		dst.SupportedOutputModalities = append([]string(nil), src.SupportedOutputModalities...)
 	}
+	fillMissingModelThinkingFacts(dst, src)
 }
 
 func modelInfoFromSources(serving modelFacts, canonical *modelFacts) pluginapi.ModelInfo {

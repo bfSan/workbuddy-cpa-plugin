@@ -734,9 +734,21 @@ test("model order never uses the legacy move endpoint", async () => {
   const panel = loadPanel();
   panel.context.api = async () => ({ models: [{ id: "a" }, { id: "b" }], source: "fresh" });
   await panel.context.loadModels(false);
+  // The ↑ / ↓ buttons are gone: ordering is drag-and-drop only, with the handle
+  // still offering keyboard ↑ / ↓ for accessibility.
+  const html = panel.elements.get("modelList").innerHTML;
+  assert.doesNotMatch(html, /data-model-action="move"/);
+  assert.doesNotMatch(html, /data-offset=/);
+  assert.doesNotMatch(html, />↑</);
+  assert.doesNotMatch(html, />↓</);
+  assert.match(html, /data-model-action="drag"/);
+
   const calls = [];
   panel.context.api = async (path) => { calls.push(path); return { models: [{ id: "a" }, { id: "b" }], source: "fresh" }; };
   panel.context.managementAPI = async () => ({ ok: true });
+  // moveModel is still the keyboard path's implementation, so deleting the
+  // buttons must not delete the function.
+  assert.equal(typeof panel.context.moveModel, "function");
   await panel.context.moveModel("a", 1);
   assert.ok(!calls.includes("/models/action"));
 });
@@ -781,4 +793,194 @@ test("hiding a model keeps the catalog visible while CPA reloads plugin config",
   assert.match(html, /已隐藏/);
   assert.doesNotMatch(html, /暂无模型/);
   assert.ok(modelReads >= 3, `model catalog reads = ${modelReads}, want a reload retry`);
+});
+
+// The action column used to squeeze 隐藏 / 预设 / 不可用 into two- and
+// three-character-wide columns. The fix is CSS: nothing in .model-actions wraps,
+// and the last grid track has a floor wide enough for the widest realistic badge
+// set, so a long model id cannot steal its width. These assertions pin the rules
+// that make that true.
+//
+// The 290px floor is measured, not guessed: rendering every badge set the panel
+// can emit showed the widest (移除 + 自定义 + 已隐藏 + 预设 + 文本补全) needs 286px.
+// A narrower fixed track would wrap the badges again; `max-content` alone would
+// make the track width differ per row and break column alignment.
+const WIDEST_ACTION_SET_PX = 286;
+
+test("model action column never wraps and keeps a content-sized track", () => {
+  const html = fs.readFileSync(path.join(__dirname, "panel.html"), "utf8");
+  const rule = selector => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // A rule may share a line with its predecessor, so accept `}` or a line
+    // break as the left boundary; that also keeps `.ftag` from matching the
+    // longer `.model-actions .ftag` selector.
+    const match = html.match(new RegExp("(?:^|[}\\n])" + escaped + "\\{([^}]*)\\}"));
+    assert.ok(match, `missing CSS rule for ${selector}`);
+    return match[1];
+  };
+  const actions = rule(".model-actions");
+  assert.match(actions, /white-space:nowrap/);
+  assert.match(actions, /flex-wrap:nowrap/);
+  // Buttons and badges inside the column inherit the no-wrap guarantee.
+  assert.match(rule(".model-actions>*"), /white-space:nowrap/);
+  assert.match(rule(".model-actions .badge,.model-actions .cd-badge"), /white-space:nowrap/);
+  assert.match(rule(".badge"), /white-space:nowrap/);
+  assert.match(rule(".ftag"), /white-space:nowrap/);
+
+  const tracks = rule(".model-head,.model-row").match(/grid-template-columns:([^;]+);/);
+  assert.ok(tracks, "grid-template-columns must be declared for the model table");
+  const columns = tracks[1].trim().split(/\s+(?![^()]*\))/);
+  assert.equal(columns.length, 5, `expected 5 tracks, got ${columns.join(" | ")}`);
+  // The last track (操作) never uses 1fr/fit-content, either of which lets the
+  // long model-id track win the flexible space and squash the buttons.
+  const last = columns[4];
+  assert.doesNotMatch(last, /1fr|fit-content/);
+  // It must be a max-content minmax with a floor that fits the widest badge set,
+  // so ordinary rows all share one width (columns stay aligned) while an
+  // unusually wide row may still grow instead of clipping.
+  const floor = last.match(/^minmax\(\s*(\d+)px\s*,\s*max-content\s*\)$/);
+  assert.ok(floor, `last track must be minmax(<px>,max-content), got ${last}`);
+  assert.ok(
+    Number(floor[1]) >= WIDEST_ACTION_SET_PX,
+    `action track floor ${floor[1]}px is below the widest badge set (${WIDEST_ACTION_SET_PX}px)`,
+  );
+  // The model-id track may shrink but not below a readable floor.
+  assert.match(columns[1], /^minmax\(\s*\d+px/);
+  // The table must be wide enough to honour every track floor plus gaps/padding;
+  // otherwise the wrap is lost whatever the tracks say.
+  const minWidth = Number((rule(".model-table").match(/min-width:(\d+)px/) || [])[1] || 0);
+  const padding = Number((rule(".model-head,.model-row").match(/padding:\d+px (\d+)px/) || [])[1] || 0);
+  const floorSum = columns.reduce((sum, track) => {
+    const value = track.match(/(\d+)px/);
+    return sum + (value ? Number(value[1]) : 0);
+  }, 0);
+  assert.ok(
+    minWidth >= floorSum,
+    `.model-table min-width ${minWidth}px cannot fit the track floors (${floorSum}px + padding)`,
+  );
+  assert.ok(padding > 0, "row padding must be declared for the track sum to be meaningful");
+});
+
+test("realm credits render one unified multiplier string", () => {
+  const { context } = loadPanel();
+  const credit = value => {
+    const html = context.realmCell({ cn: { status: "present", present: true, credits: value } }, "cn");
+    const match = html.match(/倍率 ([^<]*)<\/span>/);
+    assert.ok(match, `no 倍率 fact in ${html}`);
+    return match[1];
+  };
+  // Upstream verbatim shapes, including the "credits" suffix that used to leak.
+  assert.equal(credit({ value: "x0.34 credits", rate: 0.34 }), "0.34x");
+  assert.equal(credit({ value: "x0.21", rate: 0.21 }), "0.21x");
+  assert.equal(credit({ value: "0.21 credits", rate: 0.21 }), "0.21x");
+  assert.equal(credit({ value: "x2.20 credits", rate: 2.2 }), "2.20x");
+  // Free keeps its meaning instead of collapsing to "0x".
+  assert.equal(credit({ value: "x0.00", rate: 0 }), "免费 (0x)");
+  assert.equal(credit({ value: "0.00", rate: 0 }), "免费 (0x)");
+  // No reported value must say so, not "—" and not a fake free tier.
+  assert.equal(credit({ value: "", rate: 0, status: "unknown" }), "未上报");
+  assert.equal(credit({}), "未上报");
+  assert.equal(credit({ value: "  " }), "未上报");
+  // An explicit backend "unknown" status outranks a leftover raw value.
+  assert.equal(credit({ value: "x0.21 credits", rate: 0.21, status: "unknown" }), "未上报");
+  // A non-numeric raw value falls back to the rate the backend already parsed,
+  // but an empty one stays 未上报 — an unparsable value must not imply free.
+  assert.equal(credit({ value: "n/a", rate: 0.5 }), "0.5x");
+  assert.equal(credit({ value: "n/a", rate: null }), "未上报");
+  assert.equal(credit({ value: "", rate: 0.5 }), "未上报");
+  // The words that made the column look broken are gone everywhere.
+  assert.doesNotMatch(credit({ value: "x0.34 credits", rate: 0.34 }), /credits/);
+});
+
+test("realm thinking reports the default level, unknown and unsupported", () => {
+  const { context } = loadPanel();
+  const think = thinking => {
+    const html = context.realmCell({ cn: { status: "present", present: true, thinking } }, "cn");
+    const match = html.match(/思考 ([^<]*)<\/span>/);
+    assert.ok(match, `no 思考 fact in ${html}`);
+    return match[1];
+  };
+  const supported = { status: "supported", default: "high", can_disable: true, levels: ["low", "high", "max"] };
+  assert.equal(think(supported), "默认 high（low/high/max）");
+  // can_disable must not change the wording on its own.
+  assert.equal(think({ ...supported, can_disable: false }), "默认 high（low/high/max）");
+  assert.equal(think({ status: "unknown", levels: [] }), "未上报");
+  assert.equal(think({}), "未上报");
+  assert.equal(think(undefined), "未上报");
+  assert.equal(think({ status: "unsupported", levels: [] }), "不支持");
+  assert.equal(think({ status: "off_only", levels: [] }), "仅可关闭");
+  assert.equal(think({ status: "off_only", levels: ["high"] }), "仅可关闭（high）");
+  // supported without a default still lists the levels it accepts.
+  assert.equal(think({ status: "supported", levels: ["low", "high"] }), "low / high");
+});
+
+test("realm context marks the current default tier in every supported key shape", () => {
+  const { context } = loadPanel();
+  const line = facts => {
+    const html = context.realmCell({ cn: { status: "present", present: true, ...facts } }, "cn");
+    const match = html.match(/上下文 ([\s\S]*?)<\/span><\/div>$/);
+    assert.ok(match, `no 上下文 fact in ${html}`);
+    return match[1];
+  };
+  // context_options is the current key; supported_context_lengths is the legacy one.
+  const options = line({ context_options: [300000, 600000, 1000000], default_context_length: 600000 });
+  assert.equal(options, "300K / <b class=\"ctx-default\" title=\"当前默认档位\">600K</b> / 1M");
+  const legacy = line({ supported_context_lengths: [300000, 600000], default_context_length: 300000 });
+  assert.equal(legacy, "<b class=\"ctx-default\" title=\"当前默认档位\">300K</b> / 600K");
+  // context_options wins when both keys are present, matching the backend order.
+  const both = line({ context_options: [128000], supported_context_lengths: [300000], default_context_length: 300000 });
+  assert.equal(both, "128K");
+  // Without a default tier the list renders exactly as before — nothing bolded.
+  const noDefault = line({ context_options: [300000, 600000] });
+  assert.equal(noDefault, "300K / 600K");
+  assert.doesNotMatch(noDefault, /ctx-default/);
+  assert.doesNotMatch(line({ context_options: [300000], default_context_length: 0 }), /ctx-default/);
+  // A default that is not one of the offered tiers must not invent a tier.
+  const foreign = line({ context_options: [300000, 600000], default_context_length: 999999 });
+  assert.equal(foreign, "300K / 600K");
+  assert.doesNotMatch(foreign, /999K|ctx-default/);
+  // Single-tier fallback when no option list is reported.
+  assert.equal(line({ context_length: 128000 }), "128K");
+  assert.equal(line({}), "未上报");
+});
+
+test("realm facts escape dynamic values and never use inline handlers", async () => {
+  const panel = loadPanel();
+  const hostile = "x0.34\" credits<img src=x onerror=1>";
+  const html = panel.context.realmCell({
+    cn: {
+      status: "present",
+      present: true,
+      credits: { value: hostile, rate: 0.34 },
+      thinking: { status: "supported", default: "<b>high</b>", levels: ["<i>low</i>"] },
+      context_options: [300000],
+      default_context_length: 300000,
+    },
+  }, "cn");
+  assert.doesNotMatch(html, /<img|<i>|<b>high/);
+  assert.match(html, /&lt;/);
+  assert.doesNotMatch(html, /onclick=/);
+
+  panel.context.api = async () => ({
+    models: [{ id: "model-\"quote\"", name: "M", kind: "chat", kindLabel: "chat", credits: {} }],
+    source: "fresh",
+    realm_models: [{
+      id: "model-\"quote\"",
+      cn: {
+        status: "present",
+        present: true,
+        credits: { value: "x0.34 credits", rate: 0.34 },
+        thinking: { status: "supported", default: "high", levels: ["low", "high"] },
+        context_options: [300000, 600000],
+        default_context_length: 600000,
+      },
+    }],
+  });
+  await panel.context.loadModels(false);
+  const rendered = panel.elements.get("modelList").innerHTML;
+  assert.match(rendered, /倍率 0\.34x/);
+  assert.match(rendered, /思考 默认 high（low\/high）/);
+  assert.match(rendered, /<b class="ctx-default" title="当前默认档位">600K<\/b>/);
+  assert.doesNotMatch(rendered, /onclick=|credits/);
+  assert.match(rendered, /data-model-action="toggle"/);
 });

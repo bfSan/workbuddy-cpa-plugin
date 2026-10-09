@@ -58,8 +58,14 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .toggle{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:14px}
 .model-rows{display:flex;flex-direction:column;gap:6px;max-height:560px;overflow:auto;padding-right:2px}
-.model-table-wrap{overflow-x:auto;max-width:100%}.model-table{min-width:760px}.model-head,.model-row{display:grid;grid-template-columns:38px 190px minmax(220px,1fr) minmax(220px,1fr) 180px;align-items:center;gap:10px;padding:8px 10px}.model-head{color:var(--mut);font-size:12px;font-weight:700;border-bottom:1px solid var(--border)}
+/* 操作列必须按内容留足宽度：模型 ID 再长也只在自己的列里换行，不能把按钮挤变形。
+   最后一列下限 290px —— 实测最宽的一档（移除 + 自定义 + 已隐藏 + 预设 + 文本补全）
+   只要 286px，所以常见行都在同一宽度上，跨行仍然对齐；上限用 max-content 兜底，
+   超过下限时列只会变宽不会裁切内容。整表最小宽度由这些轨道加总决定。 */
+.model-table-wrap{overflow-x:auto;max-width:100%}.model-table{min-width:940px}.model-head,.model-row{display:grid;grid-template-columns:38px minmax(140px,1.1fr) minmax(200px,1fr) minmax(200px,1fr) minmax(290px,max-content);align-items:center;gap:10px;padding:8px 10px}.model-head{color:var(--mut);font-size:12px;font-weight:700;border-bottom:1px solid var(--border)}
 .model-row{border:1px solid var(--border);border-radius:8px;background:var(--surface)}.drag-handle{cursor:grab;touch-action:none}.drag-handle:active{cursor:grabbing}.realm-cell{min-width:0}.realm-facts{display:flex;flex-direction:column;gap:2px;color:var(--mut);font-size:12px;white-space:nowrap}.realm-facts span:first-child{color:var(--fg)}
+/* 当前默认上下文档位：加粗 + 主色，让操作者一眼看出用的是哪一档 */
+.realm-facts .ctx-default{color:var(--acc);font-weight:700}
 .model-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-weight:600;min-width:0;flex:1 1 auto;overflow-wrap:anywhere}
 .model-name{font-size:12px;flex:0 0 auto;max-width:32%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .model-context{flex:0 0 128px;max-width:128px;background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:4px 6px;color:var(--fg);font-size:12px}
@@ -76,15 +82,18 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .badge.kind-unknown{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
 .badge.preset{background:var(--acc-ring);color:var(--acc);border:1px solid var(--acc)}
 .model-row:has(.badge.kind-unknown) .model-id,.model-row:has(.badge.kind-image) .model-id{opacity:.62}
-.model-actions{display:flex;gap:6px;flex:0 0 auto;margin-left:auto}
-.model-tags{display:flex;gap:4px;flex:0 0 auto}
+/* 操作列内的按钮/徽章一律不换行：窄列下 "隐藏" 曾被压成 "隐\n藏" */
+.model-actions{display:flex;gap:6px;flex:0 0 auto;margin-left:auto;white-space:nowrap;flex-wrap:nowrap}
+.model-actions>*{white-space:nowrap}
+.model-tags{display:flex;gap:4px;flex:0 0 auto;white-space:nowrap}
 .model-actions .ftag{padding:2px 8px;font-size:12px}
 .model-actions .ftag[disabled]{opacity:.4;cursor:default}
+.model-actions .badge,.model-actions .cd-badge{white-space:nowrap}
 .card,.summary{min-width:0;background:var(--card);border:1px solid var(--border);border-radius:12px}
 .card{padding:16px}
 .card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center;gap:8px}
 .uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
-.badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
+.badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border);white-space:nowrap}
 .badge.exhausted{background:var(--err-soft);color:var(--err);border:1px solid var(--err-border)}
 .badge.pro{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .badge.cn{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
@@ -96,7 +105,7 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .cooldown-row .cd-model{font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
 .cooldown-row .cd-left{color:var(--warn);font-variant-numeric:tabular-nums;flex:0 0 auto}
 .filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
-.ftag{background:var(--surface);border:1px solid var(--border);color:var(--mut);border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600}
+.ftag{background:var(--surface);border:1px solid var(--border);color:var(--mut);border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600;white-space:nowrap}
 .ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}
 .ftag .cnt{font-size:10px;opacity:.75;margin-left:4px}
 /* 用量汇总与账号卡共用 --card，避免夜间两套底色 */
@@ -963,7 +972,7 @@ async function loadModels(toastOnError,preserveOnEmpty,refresh){
     const notChat=lastModels.filter(m=>m.chatUsable===false).length;
     if(notChat) parts.push(`${notChat} 个非聊天模型（已标注，发聊天请求会被上游拒绝）`);
     if(d.persistent) parts.push("隐藏列表保存在插件配置中");
-    parts.push("排序保存到插件配置；上下文为分区原始档位（只读）");
+    parts.push("排序保存到插件配置；上下文为分区原始档位（加粗即当前默认档位，只读）");
     if(Array.isArray(d.overlay&&d.overlay.add)&&d.overlay.add.length) parts.push("自定义模型仅保存在内存中");
     for(const realm of ["cn","global"]){const st=lastRealmStatus[realm]||{};parts.push(`${realm==="cn"?"CN":"Global"}：${st.loaded?"已加载":"未加载"} · ${st.status||st.state||"unknown"} · ${st.source||"unknown"}${st.fetched_at?" · 刷新 "+st.fetched_at:""}`);}
     hintEl.textContent=parts.join(" · ");
@@ -998,32 +1007,80 @@ function contextLabel(n){
   if(n>=1000)return Math.round(n/1000)+"K";
   return String(n);
 }
+// creditTokenFrom 从上游原值里抠出倍率数字。
+// 上游历史上给过 "x0.34 credits" / "x0.21" / "0.21 credits" / "x0.00" 几种形状，
+// 展示只认数字，并保留上游的小数位；原值里没有数字时才退回后端解析好的 rate。
+// 注意 Number(null) === 0：rate 缺失时必须显式判空，否则会伪装成"免费"。
+function creditTokenFrom(raw, rate){
+  const match=String(raw==null?"":raw).match(/\d+(?:\.\d+)?/);
+  if(match) return match[0];
+  if(rate==null||rate==="") return null;
+  const fallback=Number(rate);
+  return Number.isFinite(fallback)?String(fallback):null;
+}
+// creditText 统一倍率文案：只显示 "0.34x"，免费的显示 "免费 (0x)"。
+// value 为空或后端标记 unknown 时一律说"未上报"，绝不退化成一个假的 0x 或 "—"；
+// 也不再出现 "credits" 字眼或多余的 x。
+function creditText(c){
+  const raw=String((c&&c.value)??"").trim();
+  const status=String((c&&c.status)||"").toLowerCase();
+  if(raw===""||status==="unknown") return "未上报";
+  const token=creditTokenFrom(raw, c&&c.rate);
+  if(token===null) return "未上报";
+  if(Number(token)===0) return "免费 (0x)";
+  return token+"x";
+}
+// thinkingText 把上游 thinking 能力翻成一句人话。
+// supported 时带上当前默认档位；unknown 表示上游没报；unsupported 表示不支持。
+function thinkingText(t){
+  const think=t||{};
+  const status=String(think.status||"unknown").toLowerCase();
+  const levels=Array.isArray(think.levels)?think.levels.map(v=>String(v==null?"":v).trim()).filter(Boolean):[];
+  const rawDefault=think.default==null?"":String(think.default).trim();
+  if(status==="unsupported") return "不支持";
+  if(status==="off_only") return levels.length?`仅可关闭（${levels.join("/")}）`:"仅可关闭";
+  if(status==="supported"||levels.length){
+    if(rawDefault) return `默认 ${rawDefault}${levels.length?`（${levels.join("/")}）`:""}`;
+    return levels.length?levels.join(" / "):"未上报";
+  }
+  return "未上报";
+}
+// contextFactsHTML 渲染可选的上下文档位，并把当前默认档位加粗高亮，
+// 这样操作者一眼能看出上游现在用的是哪一档。没有 default 信息时保持原样。
+// 后端历史上用过 context_options 和 supported_context_lengths 两个键，都认。
+function contextFactsHTML(r){
+  const positive=values=>values.map(v=>Number(v)).filter(v=>Number.isFinite(v)&&v>0);
+  const options=Array.isArray(r.context_options)?positive(r.context_options):[];
+  const supported=Array.isArray(r.supported_context_lengths)?positive(r.supported_context_lengths):[];
+  const values=options.length?options:supported;
+  const rawDefault=Number(r.default_context_length);
+  const hasDefault=Number.isFinite(rawDefault)&&rawDefault>0;
+  if(!values.length){
+    return Number(r.context_length)>0?esc(contextLabel(r.context_length)):"未上报";
+  }
+  return values.map(v=>hasDefault&&v===rawDefault
+    ? `<b class="ctx-default" title="当前默认档位">${esc(contextLabel(v))}</b>`
+    : esc(contextLabel(v))).join(" / ");
+}
 function realmCell(m, realm){
   const r=m&&m[realm];
   if(!r||r.status==="not_loaded"||r.present===null) return "未加载";
   if(r.status==="absent"||r.present===false) return "—";
   if(r.status!=="present"&&r.present!==true) return "未加载";
-  const c=r.credits||{}, raw=String(c.value??"").trim();
-  const known=c.status!=="unknown"&&(raw!==""||(c.rate!=null&&Number.isFinite(Number(c.rate))));
-  const number=raw?Number(raw.replace(/^x/i,"").replace(/x$/i,"")):Number(c.rate);
-  const credit=!known?"未上报":(number===0?"免费 (0x)":(Number.isFinite(number)?number+"x":raw));
-  const t=r.thinking||{}, levels=Array.isArray(t.levels)?t.levels:[];
-  const think=levels.length?levels.join(" / "):"未上报";
-  const options=Array.isArray(r.context_options)?r.context_options:(Array.isArray(r.supported_context_lengths)?r.supported_context_lengths:[]);
-  const lengths=options.filter(v=>Number(v)>0).map(contextLabel);
-  const context=lengths.length?lengths.join(" / "):(Number(r.context_length)>0?contextLabel(r.context_length):"未上报");
-  return `<div class="realm-facts"><span>倍率 ${esc(credit)}</span><span>思考 ${esc(think)}</span><span title="分区原始上下文档位，只读">上下文 ${esc(context)}</span></div>`;
+  const credit=creditText(r.credits||{});
+  const think=thinkingText(r.thinking||{});
+  return `<div class="realm-facts"><span>倍率 ${esc(credit)}</span><span>思考 ${esc(think)}</span><span title="分区原始上下文档位，只读">上下文 ${contextFactsHTML(r)}</span></div>`;
 }
 function renderModels(){
   const box=document.getElementById("modelList");
   if(!lastModels.length){box.innerHTML=`<div class="mut">暂无模型</div>`;return;}
   const realmByID=new Map(lastRealmModels.map(m=>[String(m.id),m]));
   box.innerHTML=`<div class="model-table-wrap"><div class="model-table" role="table"><div class="model-head" role="row"><span>排序</span><span>模型</span><span>CN</span><span>Global</span><span>操作</span></div>`+
-    lastModels.map((m,i)=>{const id=String(m.id||"");const r=realmByID.get(id)||{};const escId=esc(id);const tags=[];
+    lastModels.map(m=>{const id=String(m.id||"");const r=realmByID.get(id)||{};const escId=esc(id);const tags=[];
       if(m.custom)tags.push(`<span class="badge">自定义</span>`); if(m.hidden)tags.push(`<span class="badge disabled">已隐藏</span>`);
       if(m.preset)tags.push(`<span class="badge preset">预设</span>`);
       if(m.kind&&m.kind!=="chat")tags.push(`<span class="badge kind-${esc(m.kind)}">${esc(m.kindLabel||m.kind)}</span>`);
-      return `<div class="model-row" data-model-id="${escId}" role="row"><button type="button" class="drag-handle ftag" data-model-action="drag" draggable="true" aria-label="拖拽排序 ${escId}">⠿</button><span class="model-id" title="${escId}">${escId}</span><span class="realm-cell">${realmCell(r,"cn")}</span><span class="realm-cell">${realmCell(r,"global")}</span><span class="model-actions"><button type="button" class="ftag" data-model-action="move" data-offset="-1" data-model-id="${escId}"${i===0?" disabled":""}>↑</button><button type="button" class="ftag" data-model-action="move" data-offset="1" data-model-id="${escId}"${i===lastModels.length-1?" disabled":""}>↓</button>${m.hidden?`<button type="button" class="ftag" data-model-action="restore" data-model-id="${escId}">恢复</button>`:`<button type="button" class="ftag" data-model-action="toggle" data-model-id="${escId}">${m.custom?"移除":"隐藏"}</button>`}${tags.join("")}</span></div>`;
+      return `<div class="model-row" data-model-id="${escId}" role="row"><button type="button" class="drag-handle ftag" data-model-action="drag" draggable="true" aria-label="拖拽排序 ${escId}" title="拖拽排序（聚焦后也可按 ↑ / ↓ 键）">⠿</button><span class="model-id" title="${escId}">${escId}</span><span class="realm-cell">${realmCell(r,"cn")}</span><span class="realm-cell">${realmCell(r,"global")}</span><span class="model-actions">${m.hidden?`<button type="button" class="ftag" data-model-action="restore" data-model-id="${escId}">恢复</button>`:`<button type="button" class="ftag" data-model-action="toggle" data-model-id="${escId}">${m.custom?"移除":"隐藏"}</button>`}${tags.join("")}</span></div>`;
     }).join("")+`</div></div>`;
   bindModelActions();
 }
@@ -1034,13 +1091,14 @@ function bindModelActions(){
     el.addEventListener("click",()=>{
       if(modelOrderSaving)return;
       const a=el.dataset.modelAction,id=el.dataset.modelId;
-      if(a==="move")return moveModel(id,Number(el.dataset.offset));
+      // 排序不再有 ↑ / ↓ 按钮；moveModel 只由拖拽手柄的键盘 ↑ / ↓ 触发。
       if(a==="toggle")return toggleModel(id);
       if(a==="restore")return restoreModel(id);
     });
     if(el.dataset.modelAction!=="drag")return;
     const row=el.closest(".model-row");
     el.draggable=!modelOrderSaving;
+    // 键盘排序：手柄获得焦点后按 ↑ / ↓ 仍然可用（唯一保留的按键排序入口）。
     el.addEventListener("keydown",e=>{
       if(e.key!=="ArrowUp"&&e.key!=="ArrowDown")return;
       e.preventDefault();return moveModel(row.dataset.modelId,e.key==="ArrowUp"?-1:1);

@@ -120,16 +120,64 @@ func buildPanelRealmStatus(selected map[workBuddyRealm]panelRealmSelection) map[
 	return status
 }
 
+// realmFactThinkingValue renders the upstream reasoning capability for one
+// realm cell. The status vocabulary is deliberately conservative:
+//
+//	supported    — upstream advertised at least one effort level
+//	unsupported  — upstream explicitly said supportsReasoning is false
+//	off_only     — upstream allows disabling thinking but named no level
+//	               (forward-compatible slot; the observed catalog never
+//	               reports this combination)
+//	unknown      — upstream did not report reasoning, or reported it without
+//	               any level and without an explicit supportsReasoning
+//
+// "unknown" is what an unreported capability must stay: inventing "unsupported"
+// from a missing field would tell the operator a model cannot think when the
+// upstream simply did not say. can_disabled is nil (JSON null) when upstream
+// omitted canDisableThinking, distinct from an explicit false.
+func realmFactThinkingValue(f modelFacts) map[string]any {
+	levels := append([]string{}, f.SupportedEfforts...)
+	status := "unknown"
+	switch {
+	case len(levels) > 0:
+		status = "supported"
+	case f.SupportsReasoning != nil && !*f.SupportsReasoning:
+		status = "unsupported"
+	case f.CanDisableThinking != nil && *f.CanDisableThinking:
+		status = "off_only"
+	}
+	return map[string]any{
+		"status":      status,
+		"default":     f.DefaultEffort,
+		"can_disable": cloneBool(f.CanDisableThinking),
+		"levels":      levels,
+	}
+}
+
+// realmFactEffectiveContextLength reports the context length the plugin
+// currently serves for one model. The snapshot's ModelFacts hold the raw
+// upstream catalog ("before models.dev enrichment and process-wide overrides"),
+// so the served value has to be recomputed here for an operator's tier
+// selection to show up.
+//
+// The nil-able shape is kept: a model whose length is unknown stays JSON null
+// rather than becoming 0, which the panel would render as a real tier.
+func realmFactEffectiveContextLength(f modelFacts) *int64 {
+	if length, _, _ := effectiveModelContext(f.ID, derefInt64(f.ContextLength)); length > 0 {
+		return &length
+	}
+	return cloneInt64(f.ContextLength)
+}
+
 func realmFactPanelValue(f modelFacts) map[string]any {
-	thinking := map[string]any{"status": "unknown", "levels": []string{}}
 	return map[string]any{
 		"status":                    "present",
 		"present":                   true,
 		"credits":                   map[string]any{"value": f.Credits, "rate": parseModelCreditsRate(f.Credits), "source": "snapshot", "status": map[bool]string{true: "reported", false: "unknown"}[f.Credits != ""]},
-		"context_length":            cloneInt64(f.ContextLength),
+		"context_length":            realmFactEffectiveContextLength(f),
 		"default_context_length":    cloneInt64(f.DefaultContextLength),
 		"supported_context_lengths": append([]int64(nil), f.SupportedContextLengths...),
 		"max_completion_tokens":     cloneInt64(f.MaxCompletionTokens),
-		"thinking":                  thinking,
+		"thinking":                  realmFactThinkingValue(f),
 	}
 }

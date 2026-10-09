@@ -1,7 +1,6 @@
 package main
 
 import (
-	"reflect"
 	"testing"
 	"time"
 
@@ -84,12 +83,57 @@ func TestBuildPanelRealmCatalogKeepsCNAndGlobalFactsSeparate(t *testing.T) {
 		t.Fatalf("Global loaded=%v", got)
 	}
 
-	// Returned facts must not alias the readiness snapshot.
-	*shared["cn"].(map[string]any)["context_length"].(*int64)++
-	if cn.ModelFacts[0].ContextLength == nil || *cn.ModelFacts[0].ContextLength != cnBase {
+	// Returned slices must not alias the readiness snapshot: a caller mutating a
+	// response must not corrupt the catalog another request reads.
+	supported := shared["cn"].(map[string]any)["supported_context_lengths"].([]int64)
+	if len(supported) == 0 {
+		t.Fatal("supported context lengths were dropped")
+	}
+	supported[0]++
+	if cn.ModelFacts[0].SupportedContextLengths[0] != 128000 {
 		t.Fatal("catalog row aliases source facts")
 	}
-	if !reflect.DeepEqual(shared["cn"].(map[string]any)["thinking"], map[string]any{"status": "unknown", "levels": []string{}}) {
-		t.Fatal("thinking was guessed")
+	if levels := shared["cn"].(map[string]any)["thinking"].(map[string]any)["levels"].([]string); len(levels) > 0 {
+		levels[0] = "mutated"
+		if len(cn.ModelFacts[0].SupportedEfforts) > 0 && cn.ModelFacts[0].SupportedEfforts[0] == "mutated" {
+			t.Fatal("thinking levels alias source facts")
+		}
+	}
+}
+
+// An unreported reasoning capability must stay unknown. Reporting unsupported
+// would tell the operator a model cannot think when upstream simply did not say,
+// and inventing levels would send them to a value the upstream rejects.
+func TestPanelRealmThinkingSeparatesUnreportedFromUnsupported(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name  string
+		facts modelFacts
+		want  string
+	}{
+		{"levels reported", modelFacts{SupportedEfforts: []string{"low", "high"}}, "supported"},
+		{"explicitly unsupported", modelFacts{SupportsReasoning: &no}, "unsupported"},
+		{"nothing reported", modelFacts{}, "unknown"},
+		{"reasoning capable but no levels", modelFacts{SupportsReasoning: &yes}, "unknown"},
+		{"disable-only", modelFacts{CanDisableThinking: &yes}, "off_only"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := realmFactThinkingValue(tc.facts)
+			if got["status"] != tc.want {
+				t.Fatalf("status = %v, want %v", got["status"], tc.want)
+			}
+			if tc.want != "supported" && len(got["levels"].([]string)) != 0 {
+				t.Fatalf("levels invented for %v: %v", tc.want, got["levels"])
+			}
+		})
+	}
+	// An omitted canDisableThinking must stay null rather than defaulting to
+	// false, which would claim the operator cannot turn thinking off. The value
+	// is a typed *bool, so read it through the pointer instead of comparing
+	// against an untyped nil interface, which a nil pointer never equals.
+	got := realmFactThinkingValue(modelFacts{})["can_disable"]
+	if ptr, ok := got.(*bool); !ok || ptr != nil {
+		t.Fatalf("can_disable = %#v, want a nil *bool when upstream omitted it", got)
 	}
 }

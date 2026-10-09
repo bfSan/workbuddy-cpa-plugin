@@ -361,7 +361,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.16"
+var version = "0.9.17"
 
 func wbRegistration() registration {
 	return registration{
@@ -381,6 +381,7 @@ func wbRegistration() registration {
 				{Name: "desensitize_terms", Type: pluginapi.ConfigFieldTypeArray, Description: "Editable literal term list for desensitize; missing uses the built-in 85 terms and [] means an empty custom list."},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional model IDs, single-line strings only. A non-empty list is the complete catalog and bypasses WorkBuddy catalog HTTP and cache; models.dev metadata fetch and cache still apply. Missing, null, or [] keeps dynamic WorkBuddy discovery."},
 				{Name: "hidden_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Plugin-owned model deny-list. These IDs are removed from model responses before CPA registers them, so they never appear in the host model registry or /v1/models. Panel hide/restore edits persist here."},
+				{Name: "model_order", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional unified model display order. The panel drag handle writes the complete model ID order and it is applied after CN/Global directory union."},
 				{Name: "model_context", Type: pluginapi.ConfigFieldTypeObject, Description: "Optional per-model WorkBuddy context-window selection in tokens. Values are provider-supported context_window tiers and are persisted by CPA host config."},
 				{Name: "oauth_client_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{oauthClientModeCLI, oauthClientModeWorkBuddy}, Description: "OAuth request profile: cli (default) or explicit WorkBuddy desktop profile."},
 				{Name: "enterprise_credits", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Probe strict CN enterprise credits before personal resource packages (default false; Global unchanged)."},

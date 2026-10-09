@@ -63,9 +63,13 @@ type modelReadinessSnapshot struct {
 	MetadataFetchedAt time.Time
 	ErrorCode         modelErrorCode
 	Models            []pluginapi.ModelInfo
-	configGeneration  uint64
-	authGeneration    uint64
-	identitySHA256    string
+	// Realm and ModelFacts describe the selected upstream catalog, before
+	// models.dev enrichment and process-wide credits/context overrides.
+	Realm            workBuddyRealm
+	ModelFacts       []modelFacts
+	configGeneration uint64
+	authGeneration   uint64
+	identitySHA256   string
 }
 
 func (s modelReadinessSnapshot) executable() bool {
@@ -298,6 +302,7 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	call := &modelAuthCall{done: make(chan struct{})}
 	slot.calls[authGeneration] = call
 	snapshot := modelReadinessSnapshot{
+		Realm:            identity.Realm,
 		State:            modelLoading,
 		ModelSource:      modelSourceNone,
 		MetadataSource:   modelSourceNone,
@@ -417,6 +422,9 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 		return r.finishAuthCall(slot, key, authGeneration, call, snapshot)
 	}
 
+	// Preserve untouched upstream facts independently of the served projection.
+	snapshot.Realm = modelSelection.cache.Realm
+	snapshot.ModelFacts = cloneModelFactsList(modelSelection.cache.Models)
 	models := discoveredModelInfos(modelSelection.cache.Models, metadata.cache.Records)
 	// Keep the full base catalog in the shared snapshot; handleModelForAuth
 	// applies hide/order/add to its response copy.
@@ -667,6 +675,16 @@ func (r *modelRuntime) metadataStatus() modelMetadataStatus {
 	return modelMetadataStatus{Source: modelSourceNone, ErrorCode: r.storeError}
 }
 
+func onlyModelOrderChanged(a, b *featureRuntimeConfig) bool {
+	if a == nil || b == nil || reflect.DeepEqual(a.modelOrder, b.modelOrder) {
+		return false
+	}
+	left, right := *a, *b
+	left.matcher, right.matcher = nil, nil
+	left.modelOrder, right.modelOrder = nil, nil
+	return reflect.DeepEqual(left, right)
+}
+
 func onlyModelContextChanged(a, b *featureRuntimeConfig) bool {
 	if a == nil || b == nil {
 		return false
@@ -713,6 +731,7 @@ func (r *modelRuntime) commitFeatureRuntime(next *featureRuntimeConfig) uint64 {
 	snapshot.desensitizeTerms = append([]string(nil), next.desensitizeTerms...)
 	snapshot.configuredModels = append([]string(nil), next.configuredModels...)
 	snapshot.hiddenModels = append([]string(nil), next.hiddenModels...)
+	snapshot.modelOrder = append([]string(nil), next.modelOrder...)
 	if next.modelContext != nil {
 		snapshot.modelContext = make(map[string]int64, len(next.modelContext))
 		for id, value := range next.modelContext {
@@ -728,11 +747,20 @@ func (r *modelRuntime) commitFeatureRuntime(next *featureRuntimeConfig) uint64 {
 	// Config is the persistent source for pinned multipliers; apply it on every
 	// commit so a reload is authoritative.
 	syncConfiguredCredits(snapshot.configuredCredits)
-	// hidden_models is also config-backed. Restore the persistent hide list
-	// while preserving the process-local order/add overlays.
+	// hidden_models and model_order are config-backed. Restore them while
+	// preserving the other overlay fields.
 	syncOverlayHiddenModels(snapshot.hiddenModels)
+	// The persisted config is authoritative, including removal or an empty list.
+	syncOverlayModelOrder(snapshot.modelOrder)
 	r.configCommitMu.Lock()
 	featureRuntime.Store(&snapshot)
+	// Reordering does not change catalog facts or credentials; keep the loaded
+	// snapshots and do not make a drag operation trigger upstream discovery.
+	if onlyModelOrderChanged(previous, &snapshot) {
+		generation := r.configGeneration.Load()
+		r.configCommitMu.Unlock()
+		return generation
+	}
 	// A context-tier change affects request construction and registry metadata,
 	// but not upstream model availability. Keep existing per-auth snapshots alive
 	// so selecting a tier cannot create a transient "model catalog not ready"
@@ -890,6 +918,17 @@ func cloneModelInfo(info pluginapi.ModelInfo) pluginapi.ModelInfo {
 	return info
 }
 
+func cloneModelFactsList(models []modelFacts) []modelFacts {
+	if models == nil {
+		return nil
+	}
+	out := make([]modelFacts, len(models))
+	for i, model := range models {
+		out[i] = cloneModelFacts(model)
+	}
+	return out
+}
+
 func cloneModelInfos(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 	if models == nil {
 		return nil
@@ -903,6 +942,7 @@ func cloneModelInfos(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 
 func cloneModelReadinessSnapshot(snapshot modelReadinessSnapshot) modelReadinessSnapshot {
 	snapshot.Models = cloneModelInfos(snapshot.Models)
+	snapshot.ModelFacts = cloneModelFactsList(snapshot.ModelFacts)
 	return snapshot
 }
 

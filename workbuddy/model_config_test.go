@@ -177,39 +177,21 @@ func TestHandleModelOverlayAction_HideUpdatesPersistentHiddenModels(t *testing.T
 	}
 }
 
-func TestHandleModelOverlayAction_MoveIsMemoryOnly(t *testing.T) {
+// Reordering moved to the panel's drag handle, which persists the whole list
+// through the model_order config field. The old in-memory move endpoint is gone,
+// so it must be rejected rather than silently reordering without persistence.
+func TestHandleModelOverlayAction_RejectsRemovedMove(t *testing.T) {
 	defer setModelOverlayForTest(modelOverlay{Order: []string{"a", "b"}})()
 	res := handleModelOverlayAction(managementRequestWithBody(`{"action":"move","id":"b","offset":-1}`))
-	if res["success"] != true {
-		t.Fatalf("move failed: %v", res)
+	if res["success"] != false {
+		t.Fatalf("removed move action was accepted: %v", res)
 	}
-	if res["persistent"] != false {
-		t.Fatalf("move persistence = %v, want false", res["persistent"])
-	}
-}
-
-func TestHandleModelOverlayAction_MoveSwapsNeighbours(t *testing.T) {
-	defer setModelOverlayForTest(modelOverlay{Order: []string{"a", "b", "c"}})()
-	res := handleModelOverlayAction(managementRequestWithBody(`{"action":"move","id":"c","offset":-1}`))
-	if res["success"] != true {
-		t.Fatalf("move failed: %v", res)
-	}
-	loaded, _ := loadedModelOverlay()
-	want := []string{"a", "c", "b"}
-	if !reflect.DeepEqual(loaded.Order, want) {
-		t.Fatalf("move: got %v, want %v", loaded.Order, want)
-	}
-}
-
-func TestHandleModelOverlayAction_MoveBeyondEdgeIsNoop(t *testing.T) {
-	defer setModelOverlayForTest(modelOverlay{Order: []string{"a", "b"}})()
-	res := handleModelOverlayAction(managementRequestWithBody(`{"action":"move","id":"a","offset":-1}`))
-	if res["success"] != true {
-		t.Fatalf("move at edge should still succeed: %v", res)
+	if _, ok := res["error"].(string); !ok {
+		t.Fatalf("missing rejection reason: %v", res)
 	}
 	loaded, _ := loadedModelOverlay()
 	if !reflect.DeepEqual(loaded.Order, []string{"a", "b"}) {
-		t.Fatalf("edge move changed order: %v", loaded.Order)
+		t.Fatalf("rejected move changed order: %v", loaded.Order)
 	}
 }
 

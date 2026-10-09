@@ -58,7 +58,8 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .toggle{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:14px}
 .model-rows{display:flex;flex-direction:column;gap:6px;max-height:560px;overflow:auto;padding-right:2px}
-.model-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.model-table-wrap{overflow-x:auto;max-width:100%}.model-table{min-width:760px}.model-head,.model-row{display:grid;grid-template-columns:38px 190px minmax(220px,1fr) minmax(220px,1fr) 180px;align-items:center;gap:10px;padding:8px 10px}.model-head{color:var(--mut);font-size:12px;font-weight:700;border-bottom:1px solid var(--border)}
+.model-row{border:1px solid var(--border);border-radius:8px;background:var(--surface)}.drag-handle{cursor:grab;touch-action:none}.drag-handle:active{cursor:grabbing}.realm-cell{min-width:0}.realm-facts{display:flex;flex-direction:column;gap:2px;color:var(--mut);font-size:12px;white-space:nowrap}.realm-facts span:first-child{color:var(--fg)}
 .model-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-weight:600;min-width:0;flex:1 1 auto;overflow-wrap:anywhere}
 .model-name{font-size:12px;flex:0 0 auto;max-width:32%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .model-context{flex:0 0 128px;max-width:128px;background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:4px 6px;color:var(--fg);font-size:12px}
@@ -845,6 +846,24 @@ async function clearCooldown(idx, model, btn){
 }
 const MODEL_SOURCE_LABEL={config:"配置覆盖",fresh:"上游实时",cache:"缓存",none:"未知"};
 let lastModels=[];
+let lastRealmModels=[];
+let lastRealmStatus={};
+let modelOrderSaving=false;
+let modelOrderVersion=0;
+let draggedModelID=null;
+function acceptModelCatalog(d){
+  // models owns order/hidden/custom; realm_models only supplies independent upstream facts.
+  const rows=new Map();
+  for(const m of (Array.isArray(d.models)?d.models:[])){
+    if(m&&m.id!=null&&!rows.has(String(m.id))) rows.set(String(m.id),m);
+  }
+  lastRealmModels=Array.isArray(d.realm_models)?d.realm_models:[];
+  lastRealmStatus=d.realm_status||{};
+  for(const m of lastRealmModels){
+    if(m&&m.id!=null&&!rows.has(String(m.id))) rows.set(String(m.id),{id:String(m.id),name:m.name,displayName:m.displayName});
+  }
+  lastModels=[...rows.values()];
+}
 // catalogKickStarted guards the one-shot first-load catalog discovery below, so
 // repeated renders cannot re-trigger it.
 let catalogKickStarted=false;
@@ -885,9 +904,10 @@ async function kickCatalogDiscovery(){
   if(catalogKickStarted) return;
   catalogKickStarted=true;
   try{
+    const version=modelOrderVersion;
     const d=await fetchModels(true);
-    if(!d) return;
-    lastModels=(d&&d.models)||[];
+    if(!d||modelOrderSaving||version!==modelOrderVersion) return;
+    acceptModelCatalog(d);
     if(d&&d.model_status) updateModelStatus(d.model_status);
     if(typeof renderModels==="function") renderModels();
   }catch(_){
@@ -912,16 +932,18 @@ async function loadModels(toastOnError,preserveOnEmpty,refresh){
   const box=document.getElementById("modelList");
   const srcEl=document.getElementById("modelSource");
   const hintEl=document.getElementById("modelHint");
+  const orderVersion=modelOrderVersion;
+  if(modelOrderSaving) return false;
   try{
     const d=await fetchModels(refresh);
-    if(d===null) return false;
+    if(d===null||modelOrderSaving||orderVersion!==modelOrderVersion) return false;
     const nextModels=Array.isArray(d.models)?d.models:[];
     if(preserveOnEmpty&&nextModels.length===0&&lastModels.length>0){
       hintEl.textContent=`配置已保存，模型目录正在重载 · 暂时保留 ${lastModels.length} 个模型`;
       renderModels();
       return false;
     }
-    lastModels=nextModels;
+    acceptModelCatalog(d);
     // A failed forced refresh serves the cached catalog, so the badge must not
     // keep claiming "上游实时" — that is exactly the misreport this refresh path
     // exists to remove.
@@ -941,11 +963,14 @@ async function loadModels(toastOnError,preserveOnEmpty,refresh){
     const notChat=lastModels.filter(m=>m.chatUsable===false).length;
     if(notChat) parts.push(`${notChat} 个非聊天模型（已标注，发聊天请求会被上游拒绝）`);
     if(d.persistent) parts.push("隐藏列表保存在插件配置中");
-    if(Array.isArray(d.overlay&&d.overlay.order)&&d.overlay.order.length||Array.isArray(d.overlay&&d.overlay.add)&&d.overlay.add.length) parts.push("排序和自定义模型仅保存在内存中");
+    parts.push("排序保存到插件配置；上下文为分区原始档位（只读）");
+    if(Array.isArray(d.overlay&&d.overlay.add)&&d.overlay.add.length) parts.push("自定义模型仅保存在内存中");
+    for(const realm of ["cn","global"]){const st=lastRealmStatus[realm]||{};parts.push(`${realm==="cn"?"CN":"Global"}：${st.loaded?"已加载":"未加载"} · ${st.status||st.state||"unknown"} · ${st.source||"unknown"}${st.fetched_at?" · 刷新 "+st.fetched_at:""}`);}
     hintEl.textContent=parts.join(" · ");
     renderModels();
     return lastModels.length>0;
   }catch(e){
+    if(modelOrderSaving||orderVersion!==modelOrderVersion) return false;
     box.innerHTML=`<div class="mut">加载失败：${esc(String(e&&e.message||e))}</div>`;
     srcEl.textContent="—";
     if(toastOnError) toast("模型操作失败","err",String(e&&e.message||e));
@@ -973,79 +998,91 @@ function contextLabel(n){
   if(n>=1000)return Math.round(n/1000)+"K";
   return String(n);
 }
-function renderContextSelect(m){
-  const options=Array.isArray(m.context_options)?m.context_options.map(Number).filter(Number.isFinite):[];
-  const current=Number(m.context_length)||0;
-  if(!options.length)return current?`<span class="model-context" title="有效上下文档位">${contextLabel(current)}</span>`:"";
-  const values=[0,...options.filter(v=>v!==current)];
-  if(current&&!values.includes(current))values.splice(1,0,current);
-  return `<select class="model-context" data-model-context="${esc(String(m.id||""))}" title="上游上下文档位">${values.map(v=>`<option value="${v}"${v===current?" selected":""}>${v?contextLabel(v):"自动"}</option>`).join("")}</select>`;
-}
-async function saveModelContext(select){
-  const id=String(select.dataset.modelContext||"").trim(); if(!id)return;
-  const value=Number(select.value)||0;
-  try{
-    const d=await api("/models/context",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:id,context_length:value||null})});
-    if(d&&d.error)throw new Error(d.error);
-    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({model_context:d.model_context||{}})});
-    await waitForReloadedModels(); toast("上下文档位已保存","ok",id+" · "+(value?contextLabel(value):"自动"));
-  }catch(e){toast("保存上下文档位失败","err",e.message||String(e)); await loadModels(false);}
-}
-function bindContextSelects(){
-  document.querySelectorAll("select[data-model-context]").forEach(el=>{if(el._bound)return;el._bound=true;el.addEventListener("change",()=>saveModelContext(el));});
+function realmCell(m, realm){
+  const r=m&&m[realm];
+  if(!r||r.status==="not_loaded"||r.present===null) return "未加载";
+  if(r.status==="absent"||r.present===false) return "—";
+  if(r.status!=="present"&&r.present!==true) return "未加载";
+  const c=r.credits||{}, raw=String(c.value??"").trim();
+  const known=c.status!=="unknown"&&(raw!==""||(c.rate!=null&&Number.isFinite(Number(c.rate))));
+  const number=raw?Number(raw.replace(/^x/i,"").replace(/x$/i,"")):Number(c.rate);
+  const credit=!known?"未上报":(number===0?"免费 (0x)":(Number.isFinite(number)?number+"x":raw));
+  const t=r.thinking||{}, levels=Array.isArray(t.levels)?t.levels:[];
+  const think=levels.length?levels.join(" / "):"未上报";
+  const options=Array.isArray(r.context_options)?r.context_options:(Array.isArray(r.supported_context_lengths)?r.supported_context_lengths:[]);
+  const lengths=options.filter(v=>Number(v)>0).map(contextLabel);
+  const context=lengths.length?lengths.join(" / "):(Number(r.context_length)>0?contextLabel(r.context_length):"未上报");
+  return `<div class="realm-facts"><span>倍率 ${esc(credit)}</span><span>思考 ${esc(think)}</span><span title="分区原始上下文档位，只读">上下文 ${esc(context)}</span></div>`;
 }
 function renderModels(){
   const box=document.getElementById("modelList");
-  if(!lastModels.length){
-    box.innerHTML=`<div class="mut">暂无模型</div>`;
-    return;
-  }
-  box.innerHTML=`<div class="model-rows">`+lastModels.map((m,i)=>{
-    const id=String(m.id||"");
-    const name=m.displayName||m.name||"";
-    const escId=esc(id);
-    const tags=[];
-    if(m.custom) tags.push(`<span class="badge">自定义</span>`);
-    if(Number(m.coolingAccounts)>0) tags.push(`<span class="badge cooling" title="${Number(m.coolingAccounts)} 个账号的这个模型正在冷却">冷却 ${Number(m.coolingAccounts)}</span>`);
-    // The catalog is wider than what serves chat; label the shape so an
-    // operator is not surprised by a 11102 from a model that looked selectable.
-    const kind=String(m.kind||"");
-    if(kind&&kind!=="chat"){
-      tags.push(`<span class="badge kind-${esc(kind)}" title="该模型不是聊天模型，直接发请求会被上游拒绝">${esc(m.kindLabel||kind)}</span>`);
-    }
-    // A preset is a desktop alias with its own credits, not a concrete model:
-    // label it so an operator knows what they are picking.
-    if(m.preset){
-      tags.push(`<span class="badge preset" title="桌面端预设模型，倍率与能力由上游按该别名上报">预设</span>`);
-    }
-    const cd=m.credits||{};
-    const cdValue=String(cd.value||"");
-    const rate=Number(cd.rate||0);
-    // Upstream reports promotions as x0.00; call that out instead of
-    // rendering a bare zero that reads like "unknown".
-    const free=cdValue!==""&&rate===0;
-    const cdLabel=free?"免费":esc(cdValue.replace(/^x/i,"").replace(/\s*credits?$/i,""))+"x";
-    return `<div class="model-row">
-      <span class="model-id" title="${escId}">${escId}</span>
-      <span class="model-name mut">${esc(name)}</span>
-      ${cdValue?`<span class="model-credit" title="上游积分倍率">${cdLabel}</span>`:`<span class="model-credit">—</span>`}
-      ${free?`<span class="cd-badge free">免费</span>`:""}
-      ${renderContextSelect(m)}
-       <span class="model-actions">
-        ${m.hidden?"":`
-          <button type="button" class="ftag" onclick="moveModel('${escId}',-1)" aria-label="上移 ${escId}"${i===0?" disabled":""}>↑</button>
-          <button type="button" class="ftag" onclick="moveModel('${escId}',1)" aria-label="下移 ${escId}"${i===lastModels.length-1?" disabled":""}>↓</button>
-        `}
-        ${m.hidden
-          ? `<button type="button" class="ftag" onclick="restoreModel('${escId}')">恢复</button>`
-          : `<button type="button" class="ftag" onclick="toggleModel('${escId}')">${m.custom?"移除":"隐藏"}</button>`}
-      </span>
-      ${m.hidden?`<span class="model-tags"><span class="badge disabled">已隐藏</span></span>`:""}
-      ${tags.length?`<span class="model-tags">${tags.join("")}</span>`:""}
-    </div>`;
-  }).join("")+`</div>`;
-  bindContextSelects();
+  if(!lastModels.length){box.innerHTML=`<div class="mut">暂无模型</div>`;return;}
+  const realmByID=new Map(lastRealmModels.map(m=>[String(m.id),m]));
+  box.innerHTML=`<div class="model-table-wrap"><div class="model-table" role="table"><div class="model-head" role="row"><span>排序</span><span>模型</span><span>CN</span><span>Global</span><span>操作</span></div>`+
+    lastModels.map((m,i)=>{const id=String(m.id||"");const r=realmByID.get(id)||{};const escId=esc(id);const tags=[];
+      if(m.custom)tags.push(`<span class="badge">自定义</span>`); if(m.hidden)tags.push(`<span class="badge disabled">已隐藏</span>`);
+      if(m.preset)tags.push(`<span class="badge preset">预设</span>`);
+      if(m.kind&&m.kind!=="chat")tags.push(`<span class="badge kind-${esc(m.kind)}">${esc(m.kindLabel||m.kind)}</span>`);
+      return `<div class="model-row" data-model-id="${escId}" role="row"><button type="button" class="drag-handle ftag" data-model-action="drag" draggable="true" aria-label="拖拽排序 ${escId}">⠿</button><span class="model-id" title="${escId}">${escId}</span><span class="realm-cell">${realmCell(r,"cn")}</span><span class="realm-cell">${realmCell(r,"global")}</span><span class="model-actions"><button type="button" class="ftag" data-model-action="move" data-offset="-1" data-model-id="${escId}"${i===0?" disabled":""}>↑</button><button type="button" class="ftag" data-model-action="move" data-offset="1" data-model-id="${escId}"${i===lastModels.length-1?" disabled":""}>↓</button>${m.hidden?`<button type="button" class="ftag" data-model-action="restore" data-model-id="${escId}">恢复</button>`:`<button type="button" class="ftag" data-model-action="toggle" data-model-id="${escId}">${m.custom?"移除":"隐藏"}</button>`}${tags.join("")}</span></div>`;
+    }).join("")+`</div></div>`;
+  bindModelActions();
 }
+function bindModelActions(){
+  document.querySelectorAll("[data-model-action]").forEach(el=>{
+    if(el._bound)return;el._bound=true;
+    el.disabled=el.disabled||modelOrderSaving;
+    el.addEventListener("click",()=>{
+      if(modelOrderSaving)return;
+      const a=el.dataset.modelAction,id=el.dataset.modelId;
+      if(a==="move")return moveModel(id,Number(el.dataset.offset));
+      if(a==="toggle")return toggleModel(id);
+      if(a==="restore")return restoreModel(id);
+    });
+    if(el.dataset.modelAction!=="drag")return;
+    const row=el.closest(".model-row");
+    el.draggable=!modelOrderSaving;
+    el.addEventListener("keydown",e=>{
+      if(e.key!=="ArrowUp"&&e.key!=="ArrowDown")return;
+      e.preventDefault();return moveModel(row.dataset.modelId,e.key==="ArrowUp"?-1:1);
+    });
+    el.addEventListener("dragstart",e=>{
+      if(modelOrderSaving){e.preventDefault();return;}
+      draggedModelID=row.dataset.modelId;
+      e.dataTransfer.effectAllowed="move";
+      e.dataTransfer.setData("text/plain",draggedModelID);
+    });
+    el.addEventListener("dragend",()=>{draggedModelID=null;});
+    row.addEventListener("dragover",e=>{if(draggedModelID!==null&&!modelOrderSaving)e.preventDefault();});
+    row.addEventListener("drop",e=>{
+      e.preventDefault();const from=draggedModelID;draggedModelID=null;
+      if(from!==null&&from!==row.dataset.modelId&&!modelOrderSaving)return saveModelOrder(reorderModels(from,row.dataset.modelId));
+    });
+  });
+}
+function reorderModels(from,to){
+  const ids=lastModels.map(m=>String(m.id));const a=ids.indexOf(from),b=ids.indexOf(to);
+  if(a>=0&&b>=0&&a!==b){const [x]=ids.splice(a,1);ids.splice(b,0,x);}return ids;
+}
+async function saveModelOrder(order){
+  if(modelOrderSaving)return false;
+  const previous=lastModels.slice(), ids=order.map(String), by=new Map(previous.map(m=>[String(m.id),m]));
+  if(ids.length!==by.size||new Set(ids).size!==by.size||ids.some(id=>!by.has(id)))return false;
+  if(ids.every((id,i)=>id===String(previous[i].id)))return false;
+  modelOrderVersion++;modelOrderSaving=true;
+  lastModels=ids.map(id=>by.get(id));renderModels();
+  try{
+    const response=await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({model_order:ids})});
+    if(response&&response.error)throw new Error(response.error);
+  }catch(e){
+    lastModels=previous;modelOrderSaving=false;modelOrderVersion++;renderModels();
+    toast("保存模型顺序失败","err",e.message||String(e));return false;
+  }
+  modelOrderSaving=false;modelOrderVersion++;renderModels();
+  toast("模型顺序已保存到插件配置","ok");
+  await loadModels(true,true);
+  return true;
+}
+
 
 async function modelAction(action,id,extra){
   try{
@@ -1058,8 +1095,7 @@ async function modelAction(action,id,extra){
       await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({hidden_models:hidden})});
       await waitForReloadedModels();
-    }else if(action==="move"||action==="add"){
-      toast("排序和自定义模型目前仅保存在内存中，CPA 重启后恢复","warn");
+    }else if(action==="add"){
       await loadModels(false);
     }
   }catch(e){
@@ -1067,7 +1103,12 @@ async function modelAction(action,id,extra){
   }
 }
 
-function moveModel(id,offset){ return modelAction("move",id,{offset:offset}); }
+function moveModel(id,offset){
+  if(modelOrderSaving)return false;
+  const ids=lastModels.map(m=>String(m.id)),at=ids.indexOf(String(id)),next=at+offset;
+  if(at<0||next<0||next>=ids.length)return false;
+  [ids[at],ids[next]]=[ids[next],ids[at]];return saveModelOrder(ids);
+}
 function toggleModel(id){
   const m=lastModels.find(x=>String(x.id)===String(id));
   if(m&&m.custom){

@@ -73,7 +73,7 @@ func TestCommitFeatureRuntimeRestoresHiddenOverlay(t *testing.T) {
 	oldFeatures := featureRuntime.Load()
 	t.Cleanup(func() { featureRuntime.Store(oldFeatures) })
 
-	cfg, err := parseFeatureRuntime([]byte("hidden_models: [new-hidden, second-hidden]\n"))
+	cfg, err := parseFeatureRuntime([]byte("hidden_models: [new-hidden, second-hidden]\nmodel_order: [pinned]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestCommitFeatureRuntimeRestoresHiddenOverlay(t *testing.T) {
 	}
 }
 
-func TestCommitFeatureRuntimeClearsHiddenOverlayWithoutDroppingOrderOrAdd(t *testing.T) {
+func TestCommitFeatureRuntimeClearsHiddenOverlayPreservesConfiguredOrderAndAdd(t *testing.T) {
 	restoreOverlay := setModelOverlayForTest(modelOverlay{
 		Hide:  []string{"old-hidden"},
 		Order: []string{"pinned"},
@@ -101,7 +101,7 @@ func TestCommitFeatureRuntimeClearsHiddenOverlayWithoutDroppingOrderOrAdd(t *tes
 	oldFeatures := featureRuntime.Load()
 	t.Cleanup(func() { featureRuntime.Store(oldFeatures) })
 
-	cfg, err := parseFeatureRuntime(nil)
+	cfg, err := parseFeatureRuntime([]byte("model_order: [pinned]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

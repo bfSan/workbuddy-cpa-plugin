@@ -413,8 +413,11 @@ func buildModelListQuery(force bool, callbackID string) (map[string]any, error) 
 	if cfg := currentFeatureRuntime(); cfg != nil {
 		configured = append([]string(nil), cfg.configuredModels...)
 	}
+	realmModels, realmStatus := buildPanelRealmCatalog()
 	return map[string]any{
 		"models":           items,
+		"realm_models":     realmModels,
+		"realm_status":     realmStatus,
 		"count":            len(items),
 		"source":           source,
 		"configuredModels": configured,
@@ -518,14 +521,15 @@ func handleModelOverlayWrite(req pluginapi.ManagementRequest) map[string]any {
 	}
 }
 
-// handleModelOverlayAction applies one targeted edit: hide, restore, move or add.
+// handleModelOverlayAction applies one targeted edit: hide, restore or add.
+// Reordering is not here: the panel drag handle persists the complete list
+// through the model_order config field, so an endpoint that reordered without
+// persisting would only look like it worked.
 func handleModelOverlayAction(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		Action string `json:"action"`
 		ID     string `json:"id"`
 		IDs    string `json:"ids"`
-		// move: offset -1 up, +1 down.
-		Offset int `json:"offset"`
 	}
 	if len(req.Body) > 0 {
 		if err := json.Unmarshal(req.Body, &body); err != nil {
@@ -553,15 +557,6 @@ func handleModelOverlayAction(req pluginapi.ManagementRequest) map[string]any {
 			return map[string]any{"success": false, "error": "id is required"}
 		}
 		current.Hide = removeModelID(current.Hide, id)
-	case "move":
-		if id == "" {
-			return map[string]any{"success": false, "error": "id is required"}
-		}
-		var reorderErr error
-		current.Order, reorderErr = moveModelID(current.Order, id, body.Offset)
-		if reorderErr != nil {
-			return map[string]any{"success": false, "error": reorderErr.Error()}
-		}
 	case "add":
 		if id == "" {
 			return map[string]any{"success": false, "error": "id is required"}
@@ -571,7 +566,7 @@ func handleModelOverlayAction(req pluginapi.ManagementRequest) map[string]any {
 		}
 		current.Hide = removeModelID(current.Hide, id)
 	default:
-		return map[string]any{"success": false, "error": "action must be hide, restore, move or add"}
+		return map[string]any{"success": false, "error": "action must be hide, restore or add"}
 	}
 	action := strings.ToLower(strings.TrimSpace(body.Action))
 	stored, err := storeModelOverlay(current)
@@ -598,6 +593,17 @@ func syncOverlayHiddenModels(hidden []string) {
 		return
 	}
 	overlayState.Overlay.Hide = next
+	overlayState.Revision++
+}
+
+// Config reload restores ordering independently of hide/add.
+func syncOverlayModelOrder(order []string) {
+	overlayMu.Lock()
+	defer overlayMu.Unlock()
+	if sameStringList(overlayState.Overlay.Order, order) {
+		return
+	}
+	overlayState.Overlay.Order = append([]string(nil), order...)
 	overlayState.Revision++
 }
 
@@ -636,30 +642,4 @@ func removeModelID(list []string, id string) []string {
 		return nil
 	}
 	return out
-}
-
-// moveModelID shifts one ID within the pin list, seeding the list from its
-// current position when it is not pinned yet.
-func moveModelID(list []string, id string, offset int) ([]string, error) {
-	if offset != -1 && offset != 1 {
-		return nil, &modelConfigError{field: "offset", msg: "must be -1 (up) or 1 (down)"}
-	}
-	idx := -1
-	for i, v := range list {
-		if strings.TrimSpace(v) == id {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		list = append(append([]string(nil), list...), id)
-		idx = len(list) - 1
-	}
-	target := idx + offset
-	if target < 0 || target >= len(list) {
-		return list, nil
-	}
-	out := append([]string(nil), list...)
-	out[idx], out[target] = out[target], out[idx]
-	return out, nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -51,6 +52,7 @@ type featureRuntimeConfig struct {
 	configuredModels   []string
 	configuredCredits  map[string]string
 	hiddenModels       []string
+	modelOrder         []string
 	modelContext       map[string]int64
 }
 
@@ -73,6 +75,7 @@ func currentFeatureRuntime() *featureRuntimeConfig {
 	snapshot.desensitizeTerms = append([]string(nil), cfg.desensitizeTerms...)
 	snapshot.configuredModels = append([]string(nil), cfg.configuredModels...)
 	snapshot.hiddenModels = append([]string(nil), cfg.hiddenModels...)
+	snapshot.modelOrder = append([]string(nil), cfg.modelOrder...)
 	if cfg.modelContext != nil {
 		snapshot.modelContext = make(map[string]int64, len(cfg.modelContext))
 		for id, value := range cfg.modelContext {
@@ -101,6 +104,7 @@ type featureConfigYAML struct {
 	// before model responses reach CPA, so the host global registry never sees
 	// hidden IDs.
 	HiddenModels yaml.Node `yaml:"hidden_models"`
+	ModelOrder   yaml.Node `yaml:"model_order"`
 	ModelContext yaml.Node `yaml:"model_context"`
 }
 
@@ -143,6 +147,10 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	modelOrder, err := normalizedConfiguredModels(doc.ModelOrder)
+	if err != nil {
+		return nil, fmt.Errorf("model_order: %w", err)
+	}
 	modelContext, err := normalizedModelContextConfig(doc.ModelContext)
 	if err != nil {
 		return nil, err
@@ -157,6 +165,7 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 		configuredModels:   models,
 		configuredCredits:  credits,
 		hiddenModels:       hiddenModels,
+		modelOrder:         modelOrder,
 		modelContext:       modelContext,
 	}, nil
 }

@@ -299,7 +299,7 @@ test("panel exposes the OAuth login entry and starts a login flow", async () => 
   storage.set("workbuddy-mgmt-key", "test-key");
 
   const html = fs.readFileSync(path.join(__dirname, "panel.html"), "utf8");
-  assert.match(html, /id="oauthLoginBtn"[^>]*>OAuth 登录</);
+  assert.match(html, /id="oauthLoginIntlBtn"[^>]*>登录国际账号</);
   assert.match(html, /id="oauthModal"/);
 
   await context.startOAuthLogin(fakeElement());
@@ -604,7 +604,7 @@ const CREDITS_MODELS = [
 
 function loadPanelWithCredits() {
   const panel = loadPanel();
-  panel.context.api = async () => ({ models: CREDITS_MODELS, source: "fresh" });
+  panel.context.api = async () => ({ models: CREDITS_MODELS, source: "fresh", realm_models: [{ id: "glm-5.2", cn: {status:"present",present:true,credits:{value:"0.79",rate:0.79},context_length:128000,thinking:{status:"unknown",levels:[]}}, global: {status:"absent",present:false} }], realm_status: {cn:{loaded:true},global:{loaded:false}} });
   return panel;
 }
 
@@ -622,18 +622,21 @@ test("card does not render or highlight the panel selection state", () => {
   assert.doesNotMatch(html, /class="card selected"/);
 });
 
-test("renderModels shows the multiplier as read-only text", async () => {
+test("renderModels shows realm columns and read-only facts", async () => {
   const { context, elements } = loadPanelWithCredits();
   await context.loadModels(false);
   const html = elements.get("modelList").innerHTML;
-  // No editable multiplier input remains; the value is display-only.
+  // Realm facts are read-only and displayed in the unified CN/Global table.
   assert.doesNotMatch(html, /data-credit-model/);
   assert.doesNotMatch(html, /saveModelCredit/);
-  assert.equal((html.match(/class="model-credit"/g) || []).length, CREDITS_MODELS.length);
+  assert.match(html, /CN/);
+  assert.match(html, /Global/);
   assert.match(html, /0\.79x/);
-  assert.match(html, /1\.20x/);
-  // x0.00 is a promotion, not an unknown rate: it must read as free.
-  assert.match(html, /免费/);
+  assert.match(html, /倍率 0\.79x/);
+  assert.match(html, /未加载|—/);
+  assert.match(html, /思考 未上报/);
+  assert.match(html, /data-model-action="drag"/);
+  assert.doesNotMatch(html, /restoreModel\(/);
 });
 
 test("renderModels labels non-chat entries instead of dropping them", async () => {
@@ -696,14 +699,46 @@ test("renderModels keeps hidden models visible and offers restore", async () => 
   const html = panel.elements.get("modelList").innerHTML;
   assert.match(html, /hidden-one/);
   assert.match(html, /已隐藏/);
-  assert.match(html, /restoreModel\('hidden-one'\)/);
-  assert.doesNotMatch(html, /moveModel\('hidden-one'/);
+  assert.match(html, /data-model-action="restore" data-model-id="hidden-one"/);
+  assert.doesNotMatch(html, /restoreModel\(/);
+  assert.doesNotMatch(html, /moveModel\(/);
 
   let path = "", body = null;
   panel.context.api = async (p, o) => { path = p; body = JSON.parse(o.body); return { success: true }; };
   await panel.context.restoreModel("hidden-one");
   assert.equal(path, "/models/action");
   assert.deepEqual(body, { action: "restore", id: "hidden-one" });
+});
+
+test("saveModelOrder patches only model_order and preserves the reordered list", async () => {
+  const panel = loadPanel();
+  panel.context.lastModels = undefined;
+  panel.context.api = async () => ({ models: [{ id: "a" }, { id: "b" }], source: "fresh" });
+  await panel.context.loadModels(false);
+  const patched = [];
+  panel.context.managementAPI = async (path, options) => { patched.push([path, JSON.parse(options.body)]); return { ok: true }; };
+  await panel.context.saveModelOrder(["b", "a"]);
+  assert.deepEqual(patched, [["/plugins/workbuddy/config", { model_order: ["b", "a"] }]]);
+});
+
+test("saveModelOrder rolls back when management response reports an error", async () => {
+  const panel = loadPanel();
+  panel.context.api = async () => ({ models: [{ id: "a" }, { id: "b" }], source: "fresh" });
+  await panel.context.loadModels(false);
+  panel.context.managementAPI = async () => ({ error: "rejected" });
+  await panel.context.saveModelOrder(["b", "a"]);
+  assert.equal(vm.runInContext("JSON.stringify(lastModels.map(m=>m.id))", panel.context), JSON.stringify(["a", "b"]));
+});
+
+test("model order never uses the legacy move endpoint", async () => {
+  const panel = loadPanel();
+  panel.context.api = async () => ({ models: [{ id: "a" }, { id: "b" }], source: "fresh" });
+  await panel.context.loadModels(false);
+  const calls = [];
+  panel.context.api = async (path) => { calls.push(path); return { models: [{ id: "a" }, { id: "b" }], source: "fresh" }; };
+  panel.context.managementAPI = async () => ({ ok: true });
+  await panel.context.moveModel("a", 1);
+  assert.ok(!calls.includes("/models/action"));
 });
 
 test("hiding a model keeps the catalog visible while CPA reloads plugin config", async () => {

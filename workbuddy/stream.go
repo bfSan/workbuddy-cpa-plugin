@@ -49,6 +49,21 @@ type upstreamStatusError struct {
 
 func (e *upstreamStatusError) Error() string { return e.message }
 
+// StatusCode exposes the upstream status to CPA's error classifier.
+//
+// CPA decides the scope and duration of a credential cooldown from the status
+// code carried on the error (statusCodeFromResult -> Error.StatusCode), and a
+// missing status falls back to its short transient default. Without this
+// method the type assertion in errorEnvelopeFor never matched, so a 429 that
+// this plugin cools for five minutes reached CPA as an unclassified error and
+// the panel showed a one-minute cooldown for a still-throttled pair.
+func (e *upstreamStatusError) StatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.status
+}
+
 // streamEmit pushes one chunk payload to the host stream. Returns an error if
 // the host rejected it (e.g. the client already disconnected and the stream
 // was closed), which the pump uses to stop reading a dead upstream.

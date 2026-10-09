@@ -195,8 +195,69 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 		models = applyModelOverlay(cloneModelInfos(snapshot.Models), loadedModelOverlayForRead())
 		models = filterHiddenModels(models)
 		models = filterExcludedModels(models, req.Host)
+		models = filterCoolingModels(req, models)
 	}
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
+}
+
+// filterCoolingModels removes the models this account is currently cooling.
+//
+// Why this exists: the plugin recorded per-(account, model) throttling for the
+// panel, but model.for_auth ignored it, so CPA kept believing the pair was
+// healthy. With routing.session-affinity enabled a session stays pinned to one
+// account for its whole TTL, so an operator saw a session keep hammering a
+// throttled pair instead of failing over to another account.
+//
+// Withholding the model is what makes CPA route around the bad pair: CPA
+// registers exactly this response per auth (RegisterClient, with the auth ID as
+// client ID), and its selection loop skips any account whose registry does not
+// carry the requested model (see authSupportsRouteModel in
+// conductor_selection.go).
+//
+// Only the (account, model) pair is withheld, never the whole account: cooldown
+// state is per model by design (see cooldown.go), and one degraded model must
+// not black out the rest of that account's catalog.
+//
+// The filter affects only this response. The snapshot and the panel's admin
+// catalog keep the full list, because an operator has to see a cooling model in
+// order to clear it.
+func filterCoolingModels(req authModelRequestWire, models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
+	if len(models) == 0 {
+		return models
+	}
+	authID := strings.TrimSpace(req.AuthID)
+	if authID == "" {
+		// Nothing scopes the cooldown without an auth ID, and matching against
+		// every account's state could hide a perfectly healthy model.
+		return models
+	}
+	cooling := coolingModelSetFor(authID)
+	if len(cooling) == 0 {
+		return models
+	}
+	out := make([]pluginapi.ModelInfo, 0, len(models))
+	for _, model := range models {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		if _, skip := cooling[id]; skip {
+			continue
+		}
+		// Cooldowns are keyed by the upstream model name (recordUpstreamFailure
+		// receives resolveUpstreamModel's output) while this response carries
+		// catalog IDs, and an alias can sit between the two. Try the resolved
+		// name as well so an aliased catalog ID still matches. When neither
+		// matches, the model is kept: a missed filter only preserves today's
+		// behaviour, whereas a false positive would make a working model vanish.
+		if resolved := resolveUpstreamModel(id, req.Attributes); resolved != id {
+			if _, skip := cooling[resolved]; skip {
+				continue
+			}
+		}
+		out = append(out, model)
+	}
+	return out
 }
 
 // filterHiddenModels applies the persistent plugin-owned hidden_models list.

@@ -201,7 +201,9 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	}
 	raw, errHandle := handleMethod(C.GoString(method), requestBytes)
 	if errHandle != nil {
-		writeResponse(response, errorEnvelope("plugin_error", errHandle.Error()))
+		// errorEnvelopeFor, not errorEnvelope: the upstream status is what CPA
+		// uses to scope and size the credential cooldown.
+		writeResponse(response, errorEnvelopeFor(errHandle))
 		return 1
 	}
 	writeResponse(response, raw)
@@ -361,7 +363,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.19"
+var version = "0.9.20"
 
 func wbRegistration() registration {
 	return registration{
@@ -875,6 +877,24 @@ func errorEnvelope(code, message string) []byte {
 func errorEnvelopeWithStatus(code, message string, status int) []byte {
 	raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{Code: code, Message: message, HTTPStatus: status}})
 	return raw
+}
+
+// errorEnvelopeFor serializes a handler error, preserving the upstream HTTP
+// status when the error carries one.
+//
+// The status is what lets CPA classify the failure: statusCodeFromResult feeds
+// its per-status credential cooldown (401/402 -> 30 min, 429 -> quota backoff,
+// 404 -> model support). Rendering every handler error through plain
+// errorEnvelope would drop the status, so a 429 that this plugin throttles for
+// five minutes reached CPA unclassified and only earned its short transient
+// default. Several handlers already build the envelope themselves with
+// errorEnvelopeWithStatus; this covers the ones that return a bare error.
+func errorEnvelopeFor(err error) []byte {
+	var sc interface{ StatusCode() int }
+	if errors.As(err, &sc) && sc.StatusCode() > 0 {
+		return errorEnvelopeWithStatus("plugin_error", redactSecrets(err.Error()), sc.StatusCode())
+	}
+	return errorEnvelope("plugin_error", err.Error())
 }
 
 func writeResponse(response *C.cliproxy_buffer, raw []byte) {

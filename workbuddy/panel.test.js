@@ -914,7 +914,10 @@ test("realm thinking reports the default level, unknown and unsupported", () => 
   assert.equal(think({ status: "supported", levels: ["low", "high"] }), "low / high");
 });
 
-test("realm context marks the current default tier in every supported key shape", () => {
+// 加粗必须落在【实际生效的档位】上，而不是上游自报的默认档：无 override 时
+// effectiveModelContext 取模型最大能力，所以上游默认 200K 的模型可能按 1M 服务。
+// 把默认档加粗会把一个没人使用的档位标成当前档。
+test("realm context marks the effective tier, not the provider default tier", () => {
   const { context } = loadPanel();
   const line = facts => {
     const html = context.realmCell({ cn: { status: "present", present: true, ...facts } }, "cn");
@@ -923,25 +926,38 @@ test("realm context marks the current default tier in every supported key shape"
     return match[1];
   };
   // context_options is the current key; supported_context_lengths is the legacy one.
-  const options = line({ context_options: [300000, 600000, 1000000], default_context_length: 600000 });
-  assert.equal(options, "300K / <b class=\"ctx-default\" title=\"当前默认档位\">600K</b> / 1M");
-  const legacy = line({ supported_context_lengths: [300000, 600000], default_context_length: 300000 });
-  assert.equal(legacy, "<b class=\"ctx-default\" title=\"当前默认档位\">300K</b> / 600K");
+  const options = line({ context_options: [300000, 600000, 1000000], context_length: 600000, context_source: "upstream", default_context_length: 600000 });
+  assert.equal(options, "300K / <b class=\"ctx-default\" title=\"当前生效档位（上游能力）— CPA 与客户端看到的就是这一档\">600K</b> / 1M");
+  const legacy = line({ supported_context_lengths: [300000, 600000], context_length: 300000, context_source: "upstream", default_context_length: 300000 });
+  assert.equal(legacy, "<b class=\"ctx-default\" title=\"当前生效档位（上游能力）— CPA 与客户端看到的就是这一档\">300K</b> / 600K");
   // context_options wins when both keys are present, matching the backend order.
-  const both = line({ context_options: [128000], supported_context_lengths: [300000], default_context_length: 300000 });
-  assert.equal(both, "128K");
-  // Without a default tier the list renders exactly as before — nothing bolded.
-  const noDefault = line({ context_options: [300000, 600000] });
-  assert.equal(noDefault, "300K / 600K");
-  assert.doesNotMatch(noDefault, /ctx-default/);
-  assert.doesNotMatch(line({ context_options: [300000], default_context_length: 0 }), /ctx-default/);
-  // A default that is not one of the offered tiers must not invent a tier.
-  const foreign = line({ context_options: [300000, 600000], default_context_length: 999999 });
-  assert.equal(foreign, "300K / 600K");
-  assert.doesNotMatch(foreign, /999K|ctx-default/);
-  // Single-tier fallback when no option list is reported.
-  assert.equal(line({ context_length: 128000 }), "128K");
+  const both = line({ context_options: [128000], supported_context_lengths: [300000], context_length: 128000, context_source: "upstream" });
+  assert.equal(both, "<b class=\"ctx-default\" title=\"当前生效档位（上游能力）— CPA 与客户端看到的就是这一档\">128K</b>");
+  // source=override gets its own label, so an operator can tell a pinned tier
+  // apart from one the provider merely allows.
+  const pinned = line({ supported_context_lengths: [300000, 600000], context_length: 300000, context_source: "override" });
+  assert.equal(pinned, "<b class=\"ctx-default\" title=\"当前生效档位（手动覆盖）— CPA 与客户端看到的就是这一档\">300K</b> / 600K");
+  // The regression this whole change exists for: a 200K-default model served at
+  // 1M must bold 1M. The default tier stays visible but unbolded.
+  const offList = line({ supported_context_lengths: [200000], context_length: 1000000, context_source: "upstream", default_context_length: 200000 });
+  assert.equal(offList, "200K / <b class=\"ctx-default\" title=\"当前生效档位（上游能力）— CPA 与客户端看到的就是这一档\">1M</b>");
+  assert.doesNotMatch(offList, /<b[^>]*>200K<\/b>/);
+  // An effective tier outside the offered list is appended rather than dropped.
+  const unknownList = line({ context_options: [300000, 600000], context_length: 1024000, context_source: "upstream" });
+  assert.match(unknownList, /<b class="ctx-default"[^>]*>1\.0M<\/b>$/);
+  assert.match(unknownList, /^300K \/ 600K \/ /);
+  // Without an effective value nothing is bolded, even if a default is reported.
+  const noEffective = line({ context_options: [300000, 600000], default_context_length: 600000 });
+  assert.equal(noEffective, "300K / 600K");
+  assert.doesNotMatch(noEffective, /ctx-default/);
+  // No tiers reported: the effective value still renders, bolded.
+  assert.equal(line({ context_length: 128000, context_source: "upstream" }),
+    "<b class=\"ctx-default\" title=\"当前生效档位（上游能力）— CPA 与客户端看到的就是这一档\">128K</b>");
   assert.equal(line({}), "未上报");
+  // A missing source must still produce a readable tooltip, never title="".
+  const noSource = line({ context_length: 128000 });
+  assert.match(noSource, /title="当前生效档位（来源未上报）/);
+  assert.doesNotMatch(noSource, /title=""/);
 });
 
 test("realm facts escape dynamic values and never use inline handlers", async () => {
@@ -972,6 +988,10 @@ test("realm facts escape dynamic values and never use inline handlers", async ()
         credits: { value: "x0.34 credits", rate: 0.34 },
         thinking: { status: "supported", default: "high", levels: ["low", "high"] },
         context_options: [300000, 600000],
+        // 生效值 300K，而上游自报默认档是 600K：加粗必须落在生效值上。
+        // 这正是面板曾把 200K 默认档标成当前档的那类偏差。
+        context_length: 300000,
+        context_source: "upstream",
         default_context_length: 600000,
       },
     }],
@@ -980,7 +1000,58 @@ test("realm facts escape dynamic values and never use inline handlers", async ()
   const rendered = panel.elements.get("modelList").innerHTML;
   assert.match(rendered, /倍率 0\.34x/);
   assert.match(rendered, /思考 默认 high（low\/high）/);
-  assert.match(rendered, /<b class="ctx-default" title="当前默认档位">600K<\/b>/);
+  // 加粗给生效值（300K），不是上游默认档（600K）。
+  assert.match(rendered, /<b class="ctx-default" title="当前生效档位（上游能力）[^"]*">300K<\/b>/);
+  assert.doesNotMatch(rendered, /<b class="ctx-default"[^>]*>600K<\/b>/);
   assert.doesNotMatch(rendered, /onclick=|credits/);
   assert.match(rendered, /data-model-action="toggle"/);
+});
+
+// 生效值不在上报档位表里时不能被丢掉：上游默认 200K、按最大能力生效 1M 的模型
+// 必须把 1M 显示出来并加粗，否则操作者看到的档位表和真实生效值对不上。
+test("context bolding: an effective tier outside the reported list is still shown", async () => {
+  const panel = loadPanel();
+  panel.context.api = async () => ({
+    models: [{ id: "m-offlist", name: "M", kind: "chat", kindLabel: "chat", credits: {} }],
+    source: "fresh",
+    realm_models: [{
+      id: "m-offlist",
+      cn: {
+        status: "present",
+        present: true,
+        credits: { value: "x0.11 credits", rate: 0.11 },
+        supported_context_lengths: [200000],
+        context_length: 1000000,
+        context_source: "upstream",
+        default_context_length: 200000,
+      },
+    }],
+  });
+  await panel.context.loadModels(false);
+  const rendered = panel.elements.get("modelList").innerHTML;
+  assert.match(rendered, /200K/);
+  assert.match(rendered, /<b class="ctx-default" title="当前生效档位（上游能力）[^"]*">1M<\/b>/);
+});
+
+// 来源缺失时仍要给出可用提示，不能渲染空 title（空白气泡比没有更难懂）。
+test("context bolding: a missing source still yields a readable tooltip", async () => {
+  const panel = loadPanel();
+  panel.context.api = async () => ({
+    models: [{ id: "m-nosrc", name: "M", kind: "chat", kindLabel: "chat", credits: {} }],
+    source: "fresh",
+    realm_models: [{
+      id: "m-nosrc",
+      cn: {
+        status: "present",
+        present: true,
+        credits: { value: "1x", rate: 1 },
+        supported_context_lengths: [128000],
+        context_length: 128000,
+      },
+    }],
+  });
+  await panel.context.loadModels(false);
+  const rendered = panel.elements.get("modelList").innerHTML;
+  assert.match(rendered, /<b class="ctx-default" title="当前生效档位（来源未上报）[^"]*">128K<\/b>/);
+  assert.doesNotMatch(rendered, /title=""/);
 });

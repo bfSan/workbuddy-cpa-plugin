@@ -307,12 +307,30 @@ func realmFactEffectiveContextLength(f modelFacts) *int64 {
 	return cloneInt64(f.ContextLength)
 }
 
+// realmFactContextSource names where the served tier came from, in the same
+// vocabulary the /models payload already uses (override | upstream | modelsdev
+// | none) so one operator reads one term everywhere.
+//
+// The panel needs this to bold the value that is actually advertised. The
+// served number and the provider's default tier are different numbers: with no
+// override pinned, effectiveModelContext prefers the model's maximum capability
+// (maxInputTokens / maxAllowedSize), so a model whose provider default is 200K
+// is served as 1M. Bolding default_context_length therefore highlighted a tier
+// nothing was using.
+func realmFactContextSource(f modelFacts) string {
+	if _, source, _ := effectiveModelContext(f.ID, derefInt64(f.ContextLength)); source != "" {
+		return source
+	}
+	return "none"
+}
+
 func realmFactPanelValue(f modelFacts) map[string]any {
 	return map[string]any{
 		"status":                    "present",
 		"present":                   true,
 		"credits":                   map[string]any{"value": f.Credits, "rate": parseModelCreditsRate(f.Credits), "source": "snapshot", "status": map[bool]string{true: "reported", false: "unknown"}[f.Credits != ""]},
 		"context_length":            realmFactEffectiveContextLength(f),
+		"context_source":            realmFactContextSource(f),
 		"default_context_length":    cloneInt64(f.DefaultContextLength),
 		"supported_context_lengths": append([]int64(nil), f.SupportedContextLengths...),
 		"max_completion_tokens":     cloneInt64(f.MaxCompletionTokens),

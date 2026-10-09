@@ -1045,22 +1045,44 @@ function thinkingText(t){
   }
   return "未上报";
 }
-// contextFactsHTML 渲染可选的上下文档位，并把当前默认档位加粗高亮，
-// 这样操作者一眼能看出上游现在用的是哪一档。没有 default 信息时保持原样。
+// contextFactsHTML 渲染可选的上下文档位，并把【实际生效的那一档】加粗高亮。
+//
+// 加粗不能给 default_context_length：那只是上游自报的默认档，不等于插件正在
+// 广告出去的值。effectiveModelContext 在无 override 时优先取模型最大能力
+// (maxInputTokens / maxAllowedSize)，所以上游默认 200K 的模型实际是按 1M 服务的
+// —— 加粗默认档会把一个没人使用的档位标成当前档。
+//
+// 生效值 = r.context_length（后端 realmFactEffectiveContextLength 已算好），
+// 来源在 r.context_source：override | upstream | modelsdev | none，鼠标悬停给出。
 // 后端历史上用过 context_options 和 supported_context_lengths 两个键，都认。
 function contextFactsHTML(r){
   const positive=values=>values.map(v=>Number(v)).filter(v=>Number.isFinite(v)&&v>0);
   const options=Array.isArray(r.context_options)?positive(r.context_options):[];
   const supported=Array.isArray(r.supported_context_lengths)?positive(r.supported_context_lengths):[];
   const values=options.length?options:supported;
-  const rawDefault=Number(r.default_context_length);
-  const hasDefault=Number.isFinite(rawDefault)&&rawDefault>0;
+  const rawEffective=Number(r.context_length);
+  const hasEffective=Number.isFinite(rawEffective)&&rawEffective>0;
+  const source=String(r.context_source||"");
+  const sourceLabel={override:"手动覆盖",upstream:"上游能力",modelsdev:"models.dev",none:"未知"}[source]||"来源未上报";
+  // 始终给出 title：来源缺失时说"来源未上报"，不要留下空 title（空 title 悬停
+  // 会显示一个空白气泡，比没有更难懂）。
+  const effectiveTitle=`当前生效档位（${sourceLabel}）— CPA 与客户端看到的就是这一档`;
   if(!values.length){
-    return Number(r.context_length)>0?esc(contextLabel(r.context_length)):"未上报";
+    if(!hasEffective) return "未上报";
+    return `<b class="ctx-default" title="${esc(effectiveTitle)}">${esc(contextLabel(rawEffective))}</b>`;
   }
-  return values.map(v=>hasDefault&&v===rawDefault
-    ? `<b class="ctx-default" title="当前默认档位">${esc(contextLabel(v))}</b>`
-    : esc(contextLabel(v))).join(" / ");
+  // 档位列表保留完整信息；生效值恰好落在某一档时就地加粗，否则在末尾补一个
+  // 加粗项，避免把不在档位表里的生效值静默丢掉。
+  let bolded=false;
+  const parts=values.map(v=>{
+    if(hasEffective&&v===rawEffective){bolded=true;
+      return `<b class="ctx-default" title="${esc(effectiveTitle)}">${esc(contextLabel(v))}</b>`;}
+    return esc(contextLabel(v));
+  });
+  if(hasEffective&&!bolded){
+    parts.push(`<b class="ctx-default" title="${esc(effectiveTitle)}">${esc(contextLabel(rawEffective))}</b>`);
+  }
+  return parts.join(" / ");
 }
 function realmCell(m, realm){
   const r=m&&m[realm];
@@ -1069,7 +1091,9 @@ function realmCell(m, realm){
   if(r.status!=="present"&&r.present!==true) return "未加载";
   const credit=creditText(r.credits||{});
   const think=thinkingText(r.thinking||{});
-  return `<div class="realm-facts"><span>倍率 ${esc(credit)}</span><span>思考 ${esc(think)}</span><span title="分区原始上下文档位，只读">上下文 ${contextFactsHTML(r)}</span></div>`;
+  // 外层只说明"这是该分区的档位信息"，把"哪一档在生效"的解释权留给内层加粗项
+  // 自己的 title —— 嵌套 title 悬停时取最内层，外层再断言一次会互相打架。
+  return `<div class="realm-facts"><span>倍率 ${esc(credit)}</span><span>思考 ${esc(think)}</span><span title="该分区上报的上下文档位；加粗项为当前实际生效档位">上下文 ${contextFactsHTML(r)}</span></div>`;
 }
 function renderModels(){
   const box=document.getElementById("modelList");

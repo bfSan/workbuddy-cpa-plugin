@@ -1,13 +1,55 @@
 package main
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
-// panelRealmSelection is the one snapshot chosen for a realm. Keeping the
-// snapshot and status together prevents the panel from presenting rows from
-// one account/generation with status from another.
-type panelRealmSelection struct {
+// panelRealmSnapshotSource is one account's published snapshot for one realm,
+// tagged with the auth ID that produced it. The auth ID is what makes the
+// per-model tie-break deterministic.
+type panelRealmSnapshotSource struct {
 	authID   string
 	snapshot modelReadinessSnapshot
+}
+
+// panelRealmSelection is the union of every usable account snapshot in a realm,
+// plus the latest usable snapshot kept for display.
+//
+// It used to hold exactly one snapshot. Upstream trims the catalog per account,
+// so two CN accounts can each advertise models the other never receives
+// (observed: 50 vs 52 IDs, 48 shared). Picking one snapshot dropped both
+// accounts' exclusives, and the panel rendered "未加载" for a model that realm
+// actually serves. The union matches baseModelCatalogTyped, which feeds the
+// `models` field from every account, so the two views finally agree.
+type panelRealmSelection struct {
+	// facts is the union of every usable snapshot's ModelFacts, keyed by
+	// trimmed model ID. A duplicate ID always resolves to the same winner for a
+	// given set of snapshots (see panelRealmFactBetter), so panel refreshes
+	// cannot make credits or context jump.
+	facts map[string]modelFacts
+	// order keeps first-seen insertion order so the emitted rows stay stable
+	// without depending on map iteration.
+	order []string
+	// factSource records which snapshot each merged fact came from, so a later
+	// duplicate can be compared against the current winner on (fetchedAt, authID)
+	// without re-deriving provenance.
+	factSource map[string]modelFactsSource
+	// display is the newest usable snapshot, kept only for realm_status's
+	// state/source/fetched_at. loaded is not derived from it: one stale account
+	// must not make the whole realm look unloaded while its rows show facts.
+	display modelReadinessSnapshot
+	// displayAuthID is the auth ID behind display, used to break ties in the
+	// same deterministic order as the fact merge.
+	displayAuthID string
+	// hasDisplay is false when no account reported a usable snapshot, which is
+	// the only case that legitimately renders "未加载".
+	hasDisplay bool
+	// loaded is true when at least one account in the realm has a usable
+	// snapshot, i.e. the realm has facts to show. buildPanelRealmModels and
+	// buildPanelRealmStatus both read this same value, so status can never claim
+	// a loaded realm whose rows are all not_loaded.
+	loaded bool
 }
 
 func panelRealmSelections() map[workBuddyRealm]panelRealmSelection {
@@ -27,20 +69,80 @@ func panelRealmSelections() map[workBuddyRealm]panelRealmSelection {
 		if snap.Realm != workBuddyRealmCN && snap.Realm != workBuddyRealmGlobal {
 			continue
 		}
-		// Keep failed/loading snapshots for realm_status. buildPanelRealmModels
-		// separately requires an executable snapshot with facts, so a failed realm
-		// is reported as failed rather than being mistaken for not_loaded.
-		prior, ok := selected[snap.Realm]
-		if !ok || panelRealmSnapshotBetter(snap, prior.snapshot) ||
-			(panelRealmSnapshotEquivalent(snap, prior.snapshot) && file.ID < prior.authID) {
-			selected[snap.Realm] = panelRealmSelection{authID: file.ID, snapshot: snap}
+		// Failed/loading snapshots contribute no rows but are still tracked so a
+		// realm whose every account failed reports failed rather than not_loaded.
+		// Only an executable snapshot with facts makes the realm loaded.
+		selection := selected[snap.Realm]
+		if snap.executable() && len(snap.ModelFacts) > 0 {
+			selection.loaded = true
+			selection = panelRealmSelectionAddFacts(selection, snap, file.ID)
 		}
+		if !selection.hasDisplay || panelRealmSnapshotBetter(snap, selection.display) ||
+			(panelRealmSnapshotEquivalent(snap, selection.display) &&
+				(!selection.hasDisplay || file.ID < selection.displayAuthID)) {
+			selection.display = snap
+			selection.displayAuthID = file.ID
+			selection.hasDisplay = true
+		}
+		selected[snap.Realm] = selection
 	}
 	return selected
 }
 
-// buildPanelRealmCatalog selects once for both response fields. It reads only
-// auth IDs and published snapshots, never credentials or upstream endpoints.
+// panelRealmSelectionAddFacts merges one account's facts into the realm union.
+func panelRealmSelectionAddFacts(selection panelRealmSelection, snap modelReadinessSnapshot, authID string) panelRealmSelection {
+	if selection.facts == nil {
+		selection.facts = make(map[string]modelFacts)
+	}
+	if selection.factSource == nil {
+		selection.factSource = make(map[string]modelFactsSource)
+	}
+	source := modelFactsSource{snapshot: snap, authID: authID}
+	for _, fact := range snap.ModelFacts {
+		id := strings.TrimSpace(fact.ID)
+		if id == "" {
+			continue
+		}
+		existing, seen := selection.facts[id]
+		if !seen {
+			selection.facts[id] = cloneModelFacts(fact)
+			selection.order = append(selection.order, id)
+			continue
+		}
+		// A duplicate ID must resolve the same way on every refresh, so the
+		// winner is chosen by a total order over (fetchedAt, authID) rather
+		// than by whichever snapshot happened to be visited last.
+		if panelRealmFactWins(fact, existing, source, selection.factSource[id]) {
+			selection.facts[id] = cloneModelFacts(fact)
+			selection.factSource[id] = source
+		}
+	}
+	return selection
+}
+
+// modelFactsSource identifies which snapshot a merged fact came from, so a later
+// duplicate can be compared against the winner without re-deriving provenance.
+type modelFactsSource struct {
+	snapshot modelReadinessSnapshot
+	authID   string
+}
+
+// panelRealmFactWins reports whether candidate should replace current for the
+// same model ID inside one realm. The order is "latest ModelsFetchedAt wins,
+// ties broken by the lexicographically smallest auth ID", which is a total order
+// over distinct (authID) sources and therefore independent of map iteration.
+func panelRealmFactWins(candidate modelFacts, current modelFacts, candidateSource, currentSource modelFactsSource) bool {
+	if candidateSource.authID == currentSource.authID {
+		return false
+	}
+	if !candidateSource.snapshot.ModelsFetchedAt.Equal(currentSource.snapshot.ModelsFetchedAt) {
+		return candidateSource.snapshot.ModelsFetchedAt.After(currentSource.snapshot.ModelsFetchedAt)
+	}
+	return candidateSource.authID < currentSource.authID
+}
+
+// panelRealmSnapshotBetter orders snapshots for display. An executable snapshot
+// beats a failed one; among equals the newest ModelsFetchedAt wins.
 func panelRealmSnapshotBetter(candidate, current modelReadinessSnapshot) bool {
 	if candidate.executable() != current.executable() {
 		return candidate.executable()
@@ -52,6 +154,8 @@ func panelRealmSnapshotEquivalent(a, b modelReadinessSnapshot) bool {
 	return a.executable() == b.executable() && a.ModelsFetchedAt.Equal(b.ModelsFetchedAt)
 }
 
+// buildPanelRealmCatalog selects once for both response fields. It reads only
+// auth IDs and published snapshots, never credentials or upstream endpoints.
 func buildPanelRealmCatalog() ([]map[string]any, map[string]any) {
 	selected := panelRealmSelections()
 	return buildPanelRealmModels(selected), buildPanelRealmStatus(selected)
@@ -60,16 +164,15 @@ func buildPanelRealmCatalog() ([]map[string]any, map[string]any) {
 func buildPanelRealmModels(selected map[workBuddyRealm]panelRealmSelection) []map[string]any {
 	byID := make(map[string]map[string]any)
 	order := make([]string, 0)
-	for _, realm := range []workBuddyRealm{workBuddyRealmCN, workBuddyRealmGlobal} {
-		selection, loaded := selected[realm]
-		if !loaded || !selection.snapshot.executable() || len(selection.snapshot.ModelFacts) == 0 {
+	for _, realm := range panelRealmList() {
+		selection := selected[realm]
+		if !selection.loaded {
+			// No usable snapshot in this realm: every row's cell must say
+			// not_loaded, matching realm_status' loaded=false for the realm.
 			continue
 		}
-		for _, fact := range selection.snapshot.ModelFacts {
-			id := strings.TrimSpace(fact.ID)
-			if id == "" {
-				continue
-			}
+		for _, id := range selection.order {
+			fact := selection.facts[id]
 			row := byID[id]
 			if row == nil {
 				row = map[string]any{"id": id, "name": fact.Name}
@@ -86,11 +189,15 @@ func buildPanelRealmModels(selected map[workBuddyRealm]panelRealmSelection) []ma
 	out := make([]map[string]any, 0, len(order))
 	for _, id := range order {
 		row := byID[id]
-		for _, realm := range []workBuddyRealm{workBuddyRealmCN, workBuddyRealmGlobal} {
+		for _, realm := range panelRealmList() {
 			if _, ok := row[string(realm)]; ok {
 				continue
 			}
-			if _, loaded := selected[realm]; loaded {
+			// The realm has facts but not this ID: the model is genuinely absent
+			// from the account catalog, which is a different claim than "we never
+			// loaded anything". `absent` renders "—", `not_loaded` renders
+			// "未加载".
+			if selected[realm].loaded {
 				row[string(realm)] = map[string]any{"status": "absent", "present": false}
 			} else {
 				row[string(realm)] = map[string]any{"status": "not_loaded", "present": nil}
@@ -98,26 +205,57 @@ func buildPanelRealmModels(selected map[workBuddyRealm]panelRealmSelection) []ma
 		}
 		out = append(out, row)
 	}
+	sortPanelRealmRows(out)
 	return out
+}
+
+// sortPanelRealmRows keeps the response order stable across refreshes. The
+// per-realm order lists are built by iterating auth files, whose order the host
+// does not promise, so the union must be sorted once instead of inheriting it.
+func sortPanelRealmRows(rows []map[string]any) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		left, _ := rows[i]["id"].(string)
+		right, _ := rows[j]["id"].(string)
+		return left < right
+	})
 }
 
 func buildPanelRealmStatus(selected map[workBuddyRealm]panelRealmSelection) map[string]any {
 	status := make(map[string]any, 2)
-	for _, realm := range []workBuddyRealm{workBuddyRealmCN, workBuddyRealmGlobal} {
-		selection, loaded := selected[realm]
-		if !loaded {
-			status[string(realm)] = map[string]any{"status": "not_loaded", "loaded": false}
+	for _, realm := range panelRealmList() {
+		selection := selected[realm]
+		if !selection.loaded {
+			entry := map[string]any{"status": "not_loaded", "loaded": false}
+			// A realm whose accounts failed reports the failure instead of
+			// pretending nothing was ever attempted. loaded stays false and the
+			// rows stay not_loaded, so status and rows still agree.
+			if selection.hasDisplay {
+				entry["status"] = string(selection.display.State)
+				entry["source"] = string(selection.display.ModelSource)
+				entry["fetched_at"] = selection.display.ModelsFetchedAt
+			}
+			status[string(realm)] = entry
 			continue
 		}
-		snap := selection.snapshot
-		status[string(realm)] = map[string]any{
-			"status":     string(snap.State),
-			"loaded":     snap.executable(),
-			"source":     string(snap.ModelSource),
-			"fetched_at": snap.ModelsFetchedAt,
+		entry := map[string]any{"loaded": true}
+		if selection.hasDisplay {
+			// state/source/fetched_at describe the newest usable snapshot; loaded
+			// describes whether the realm has any usable snapshot at all.
+			entry["status"] = string(selection.display.State)
+			entry["source"] = string(selection.display.ModelSource)
+			entry["fetched_at"] = selection.display.ModelsFetchedAt
+		} else {
+			entry["status"] = "loaded"
 		}
+		status[string(realm)] = entry
 	}
 	return status
+}
+
+// panelRealmList fixes the realm order so the response field order never depends
+// on map iteration.
+func panelRealmList() []workBuddyRealm {
+	return []workBuddyRealm{workBuddyRealmCN, workBuddyRealmGlobal}
 }
 
 // realmFactThinkingValue renders the upstream reasoning capability for one

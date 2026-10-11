@@ -185,6 +185,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   .model-row{align-items:flex-start;flex-wrap:wrap}
   .model-actions{margin-left:auto}
 }
+.ctx-tier{display:inline-block;padding:0 3px;margin:0;border:0;background:none;color:var(--mut);font:inherit;font-size:12px;line-height:1.35;cursor:pointer;border-radius:4px}.ctx-tier:hover{background:var(--btn-sec-hover);color:var(--fg)}.ctx-tier:focus-visible{outline:2px solid var(--acc);outline-offset:1px}.ctx-tier-on{color:var(--acc);font-weight:700;cursor:default}.ctx-tier-on:hover{background:none;color:var(--acc)}
 </style>
 <script>
 /* Early theme sync (before body paint): mirror CPA parent data-theme when
@@ -234,7 +235,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 <body>
 <div class="wrap">
   <h1>WorkBuddy 账号面板</h1>
-  <div class="sub">积分余额 · CN 每日签到（09:00/21:00）· Global 专家包一次性手动领取 · 耗尽自动关/删</div>
+  <div class="sub">积分余额 · CN 每日签到（09:00/21:00）· Global 不提供签到 · 耗尽自动关/删</div>
   <div id="modelStatus" class="model-status" role="status" aria-live="polite" aria-atomic="true" hidden></div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
@@ -1448,4 +1449,7 @@ async function checkinAll(btn){
   // load() re-renders grid; only restore toolbar button
   busy(btn,false);
 }
-.ctx-tier{display:inline-block;padding:0 3px;margin:0;border:0;background:none;color:var(--mut);font:inherit;font-size:12px;line-height:1.35;cursor:pointer;border-radius:4px}.ctx-tier:hover{background:var(--btn-sec-hover);color:var(--fg)}.ctx-tier:focus-visible{outline:2px solid var(--acc);outline-offset:1px}.ctx-tier-on{color:var(--acc);font-weight:700;cursor:default}.ctx-tier-on:hover{background:none;color:var(--acc)}
+
+// 面板入口：嵌入 CPA 时从主面板获取 management key；独立打开时显示输入框。
+if(getKey()) load(false); else showAuth();
+</script>

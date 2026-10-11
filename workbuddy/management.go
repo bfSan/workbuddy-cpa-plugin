@@ -181,7 +181,6 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import WorkBuddy credential JSON (nested or flat) into host auth store."},
-			{Method: http.MethodPost, Path: base + "/trial", Description: "Claim expert trial pack for one Global account (auth_index). One-time 250 credits / 14 days."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
 			{Method: http.MethodGet, Path: base + "/models", Description: "List the effective model catalog with its source and per-model cooldown state. Add ?refresh=1 to re-discover every account's catalog upstream instead of serving the cached snapshots."},
@@ -266,8 +265,6 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQueryWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodPost && path == base+"/import":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportAuth(req.ManagementRequest)))
-	case req.Method == http.MethodPost && path == base+"/trial":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleClaimTrialWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodPost && path == base+"/keepalive":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveNowWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodGet && path == base+"/keepalive/status":
@@ -655,7 +652,6 @@ func mutatingManagementPath(path string) bool {
 		base + "/checkin",
 		base + "/checkin/config",
 		base + "/import",
-		base + "/trial",
 		base + "/keepalive",
 		base + "/models",
 		base + "/models/action",

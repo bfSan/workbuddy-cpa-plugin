@@ -250,7 +250,6 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="sec" onclick="openDesensitizeModal()">屏蔽词设置</button>
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
-    <button class="sec" onclick="claimTrialAll(this)" title="仅 Global · 一次性">全部领取</button>
     <label class="toggle" title="仅 CN 账号 09:00 / 21:00"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到(CN)</label>
     <span class="toggle" id="svtime"></span>
   </div>
@@ -476,7 +475,6 @@ function bindCardActions(root){
       const act=ev.currentTarget.dataset.action;
       const idx=ev.currentTarget.dataset.authIndex;
       if(act==="checkin") checkin(idx, ev.currentTarget);
-      else if(act==="claim") claimTrial(idx, ev.currentTarget);
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
       else if(act==="cooldown-clear") clearCooldown(ev.currentTarget.getAttribute("data-auth-id")||idx, ev.currentTarget.getAttribute("data-model"), ev.currentTarget);
       else if(act==="rename") renameAccount(idx, ev.currentTarget.dataset.nick||"");
@@ -529,15 +527,9 @@ function card(a){
   const isGlobal=region==="global";
   const disabled=!!a.disabled;
   const regionBadge=`<span class="badge ${region}">${isGlobal?"Global":"CN"}</span>`;
-  // CN: 签到 button; Global: 领取专家加油包 button (or 已领取 if trial_claimed)
-  let actionHTML;
-  if(isGlobal){
-    if(a.trial_claimed){
-      actionHTML='<button class="done" disabled="disabled">已领取</button>';
-    }else{
-      actionHTML=`<button class="sec" data-action="claim" data-auth-index="${esc(a.auth_index)}">领取专家加油包</button>`;
-    }
-  }else{
+  // 仅 CN 提供每日签到；Global 不显示签到或领取权益按钮。
+  let actionHTML="";
+  if(!isGlobal){
     const checked=ci.today_checked_in;
     const btnClass=checked?"done":"sec";
     const btnText=checked?"已签到":"签到";
@@ -1055,7 +1047,7 @@ function thinkingText(t){
 // 生效值 = r.context_length（后端 realmFactEffectiveContextLength 已算好），
 // 来源在 r.context_source：override | upstream | modelsdev | none，鼠标悬停给出。
 // 后端历史上用过 context_options 和 supported_context_lengths 两个键，都认。
-function contextFactsHTML(r){
+function contextFactsHTML(r,modelId){
   const positive=values=>values.map(v=>Number(v)).filter(v=>Number.isFinite(v)&&v>0);
   const options=Array.isArray(r.context_options)?positive(r.context_options):[];
   const supported=Array.isArray(r.supported_context_lengths)?positive(r.supported_context_lengths):[];
@@ -1075,16 +1067,24 @@ function contextFactsHTML(r){
   // 加粗项，避免把不在档位表里的生效值静默丢掉。
   let bolded=false;
   const parts=values.map(v=>{
-    if(hasEffective&&v===rawEffective){bolded=true;
-      return `<b class="ctx-default" title="${esc(effectiveTitle)}">${esc(contextLabel(v))}</b>`;}
-    return esc(contextLabel(v));
+    const active=hasEffective&&v===rawEffective;
+    if(!modelId){
+      if(active){bolded=true; return `<b class="ctx-default" title="${esc(effectiveTitle)}">${esc(contextLabel(v))}</b>`;}
+      return esc(contextLabel(v));
+    }
+    if(active) bolded=true;
+    const cls=active?"ctx-tier ctx-tier-on":"ctx-tier";
+    const hint=active?`当前生效档位（${contextLabel(v)}）。点击可换档。`:`点击改用 ${contextLabel(v)} 上下文窗口`;
+    return `<button type="button" class="${cls}" data-ctx-tier="${esc(modelId)}" data-ctx-tokens="${v}" aria-pressed="${active?"true":"false"}" title="${esc(hint)}">${esc(contextLabel(v))}</button>`;
   });
   if(hasEffective&&!bolded){
-    parts.push(`<b class="ctx-default" title="${esc(effectiveTitle)}">${esc(contextLabel(rawEffective))}</b>`);
+    parts.push(modelId
+      ? `<b class="ctx-default" title="${esc(effectiveTitle)}">${esc(contextLabel(rawEffective))}</b>`
+      : `<b class="ctx-default" title="${esc(effectiveTitle)}">${esc(contextLabel(rawEffective))}</b>`);
   }
   return parts.join(" / ");
 }
-function realmCell(m, realm){
+function realmCell(m, realm, modelId){
   const r=m&&m[realm];
   if(!r||r.status==="not_loaded"||r.present===null) return "未加载";
   if(r.status==="absent"||r.present===false) return "—";
@@ -1093,7 +1093,7 @@ function realmCell(m, realm){
   const think=thinkingText(r.thinking||{});
   // 外层只说明"这是该分区的档位信息"，把"哪一档在生效"的解释权留给内层加粗项
   // 自己的 title —— 嵌套 title 悬停时取最内层，外层再断言一次会互相打架。
-  return `<div class="realm-facts"><span>倍率 ${esc(credit)}</span><span>思考 ${esc(think)}</span><span title="该分区上报的上下文档位；加粗项为当前实际生效档位">上下文 ${contextFactsHTML(r)}</span></div>`;
+  return `<div class="realm-facts"><span>倍率 ${esc(credit)}</span><span>思考 ${esc(think)}</span><span title="该分区上报的上下文档位；加粗项为当前实际生效档位">上下文 ${contextFactsHTML(r,modelId)}</span></div>`;
 }
 function renderModels(){
   const box=document.getElementById("modelList");
@@ -1104,11 +1104,19 @@ function renderModels(){
       if(m.custom)tags.push(`<span class="badge">自定义</span>`); if(m.hidden)tags.push(`<span class="badge disabled">已隐藏</span>`);
       if(m.preset)tags.push(`<span class="badge preset">预设</span>`);
       if(m.kind&&m.kind!=="chat")tags.push(`<span class="badge kind-${esc(m.kind)}">${esc(m.kindLabel||m.kind)}</span>`);
-      return `<div class="model-row" data-model-id="${escId}" role="row"><button type="button" class="drag-handle ftag" data-model-action="drag" draggable="true" aria-label="拖拽排序 ${escId}" title="拖拽排序（聚焦后也可按 ↑ / ↓ 键）">⠿</button><span class="model-id" title="${escId}">${escId}</span><span class="realm-cell">${realmCell(r,"cn")}</span><span class="realm-cell">${realmCell(r,"global")}</span><span class="model-actions">${m.hidden?`<button type="button" class="ftag" data-model-action="restore" data-model-id="${escId}">恢复</button>`:`<button type="button" class="ftag" data-model-action="toggle" data-model-id="${escId}">${m.custom?"移除":"隐藏"}</button>`}${tags.join("")}</span></div>`;
+      return `<div class="model-row" data-model-id="${escId}" role="row"><button type="button" class="drag-handle ftag" data-model-action="drag" draggable="true" aria-label="拖拽排序 ${escId}" title="拖拽排序（聚焦后也可按 ↑ / ↓ 键）">⠿</button><span class="model-id" title="${escId}">${escId}</span><span class="realm-cell">${realmCell(r,"cn",id)}</span><span class="realm-cell">${realmCell(r,"global",id)}</span><span class="model-actions">${m.hidden?`<button type="button" class="ftag" data-model-action="restore" data-model-id="${escId}">恢复</button>`:`<button type="button" class="ftag" data-model-action="toggle" data-model-id="${escId}">${m.custom?"移除":"隐藏"}</button>`}${tags.join("")}</span></div>`;
     }).join("")+`</div></div>`;
   bindModelActions();
 }
 function bindModelActions(){
+  document.querySelectorAll("[data-ctx-tier]").forEach(el=>{
+    if(el._ctxBound)return; el._ctxBound=true;
+    el.addEventListener("click",()=>{
+      const id=el.dataset.ctxTier, tokens=Number(el.dataset.ctxTokens);
+      if(el.getAttribute("aria-pressed")==="true"||!Number.isFinite(tokens)||tokens<=0)return;
+      setContextTier(id,tokens);
+    });
+  });
   document.querySelectorAll("[data-model-action]").forEach(el=>{
     if(el._bound)return;el._bound=true;
     el.disabled=el.disabled||modelOrderSaving;
@@ -1145,6 +1153,21 @@ function reorderModels(from,to){
   const ids=lastModels.map(m=>String(m.id));const a=ids.indexOf(from),b=ids.indexOf(to);
   if(a>=0&&b>=0&&a!==b){const [x]=ids.splice(a,1);ids.splice(b,0,x);}return ids;
 }
+async function setContextTier(id,tokens){
+  const previous=lastRealmModels.map(m=>Object.assign({},m));
+  try{
+    const d=await api("/models/context",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:id,context_length:tokens})});
+    if(d&&d.success===false) throw new Error(String(d.error||"插件拒绝了这次切换"));
+    const overrides=d&&d.model_context?d.model_context:{};
+    const response=await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({model_context:overrides})});
+    if(response&&response.error) throw new Error(String(response.error));
+  }catch(e){lastRealmModels=previous;renderModels();toast("切换上下文档位失败","err",String(e&&e.message||e));return false;}
+  await loadModels(false);
+  const applied=lastRealmModels.some(m=>String(m.id)===String(id)&&["cn","global"].some(realm=>m[realm]&&Number(m[realm].context_length)===tokens));
+  if(!applied){toast("档位未生效","warn","插件配置没有保留新的上下文档位");return false;}
+  toast("上下文档位已切换","ok",contextLabel(tokens)); return true;
+}
+
 async function saveModelOrder(order){
   if(modelOrderSaving)return false;
   const previous=lastModels.slice(), ids=order.map(String), by=new Map(previous.map(m=>[String(m.id),m]));
@@ -1311,7 +1334,7 @@ function checkinResultToast(res, who){
   const name=res.nickname||who||"账号";
   if(res.error){toast(name+"：签到失败","err",res.error);return}
   if(res.reason==="global"||(/国际版|不支持/.test(String(res.message||"")))){
-    toast(name+"：国际版无需签到","warn",res.message||"请用领取专家加油包");return;
+    toast(name+"：国际版不提供签到","warn",res.message||"当前仅支持 CN 签到");return;
   }
   if(res.reason==="already"||(res.skipped&&/already|已签|今日/.test(String(res.message||"")))){
     toast(name+"：今日已签到","ok",res.message||"");return;
@@ -1425,343 +1448,4 @@ async function checkinAll(btn){
   // load() re-renders grid; only restore toolbar button
   busy(btn,false);
 }
-async function claimTrial(idx, btn){
-  busy(btn,true);
-  try{
-    const d=await api("/trial",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
-    if(d.error){toast("领取失败","err",d.error);busy(btn,false);}
-    else if(d.already_claimed){toast((d.nickname||"账号")+"：已领取过","warn",d.message||"");markTrialDone(btn);}
-    else if(d.success){toast((d.nickname||"账号")+"：领取成功","ok","+250 积分 · 14天有效");markTrialDone(btn);}
-    else{toast((d.nickname||"账号")+"："+(d.message||"未知"),"warn");busy(btn,false);}
-    await load(false);
-  }catch(e){toast("领取请求失败","err",e.message);busy(btn,false);}
-}
-async function claimTrialAll(btn){
-  busy(btn,true);
-  try{
-    const d=await api("/accounts");
-    const accounts=(d.accounts||[]).filter(a=>(a.region||"cn")==="global"&&!a.trial_claimed);
-    if(!accounts.length){toast("没有可领取的账号","warn");busy(btn,false);return;}
-    let ok=0,fail=0,already=0;
-    for(const a of accounts){
-      try{
-        const r=await api("/trial",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:a.auth_index})});
-        if(r.success)ok++;else if(r.already_claimed||r.error)already++;else fail++;
-      }catch(e){fail++;}
-    }
-    if(fail)toast("批量领取："+ok+" 成功 / "+already+" 已领 / "+fail+" 失败","err");
-    else if(ok)toast("批量领取："+ok+" 成功"+(already?" / "+already+" 已领":""),"ok");
-    else toast("全部账号已领取","warn");
-    await load(false);
-  }catch(e){toast("批量领取失败","err",e.message)}
-  busy(btn,false);
-}
-async function toggleAuto(on){
-  try{const d=await api("/checkin/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});toast("自动签到已"+(d.checkin_auto?"开启 ✅":"关闭 ⏸"),"ok")}catch(e){toast("设置失败","err",e.message)}
-}
-function renderDesensitizeSettings(d){
-  document.getElementById("desensitizeEnabled").checked=!!d.enabled;
-  document.getElementById("desensitizeTerms").value=(d.terms||[]).join("\n");
-  document.getElementById("desensitizeSource").textContent=d.source==="custom"?"自定义词表":"内置默认词表";
-}
-async function loadDesensitizeSettings(){
-  renderDesensitizeSettings(await api("/desensitize"));
-}
-function sameDesensitizeTerms(left,right){
-  return Array.isArray(left)&&left.length===right.length&&left.every((term,i)=>term===right[i]);
-}
-async function waitForDesensitizeSettings(matches){
-  for(let attempt=0;attempt<20;attempt++){
-    const d=await api("/desensitize");
-    if(matches(d)){
-      renderDesensitizeSettings(d);
-      return;
-    }
-    await new Promise(resolve=>setTimeout(resolve,100));
-  }
-  throw new Error("设置已写入，但运行时未应用");
-}
-async function openDesensitizeModal(){
-  try{
-    await loadDesensitizeSettings();
-    document.getElementById("desensitizeModal").classList.add("show");
-  }catch(e){toast("读取屏蔽词设置失败","err",e.message||String(e))}
-}
-function closeDesensitizeModal(){
-  document.getElementById("desensitizeModal").classList.remove("show");
-}
-function onDesensitizeMaskClick(e){
-  if(e.target===document.getElementById("desensitizeModal")) closeDesensitizeModal();
-}
-async function saveDesensitize(btn){
-  const terms=[...new Set(document.getElementById("desensitizeTerms").value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean))];
-  const enabled=document.getElementById("desensitizeEnabled").checked;
-  busy(btn,true);
-  try{
-    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:enabled,desensitize_terms:terms})});
-    await waitForDesensitizeSettings(d=>d.enabled===enabled&&d.source==="custom"&&sameDesensitizeTerms(d.terms,terms));
-    toast("屏蔽词设置已保存","ok");
-  }catch(e){toast("保存屏蔽词设置失败","err",e.message||String(e))}
-  finally{busy(btn,false)}
-}
-async function restoreDesensitizeTerms(btn){
-  busy(btn,true);
-  try{
-    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize_terms:null})});
-    await waitForDesensitizeSettings(d=>d.source==="default");
-    toast("已恢复默认词表","ok");
-  }catch(e){toast("恢复默认词表失败","err",e.message||String(e))}
-  finally{busy(btn,false)}
-}
-async function restoreAllDesensitizeDefaults(btn){
-  busy(btn,true);
-  try{
-    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:false,desensitize_terms:null})});
-    await waitForDesensitizeSettings(d=>!d.enabled&&d.source==="default");
-    toast("已恢复全部默认设置","ok");
-  }catch(e){toast("恢复全部默认设置失败","err",e.message||String(e))}
-  finally{busy(btn,false)}
-}
-function openImportModal(){
-  const m=document.getElementById("importModal");
-  m.classList.add("show");
-  const ta=document.getElementById("importRaw");
-  if(ta) setTimeout(()=>ta.focus(),0);
-}
-function closeImportModal(){
-  document.getElementById("importModal").classList.remove("show");
-}
-function onImportMaskClick(e){
-  if(e.target===document.getElementById("importModal")) closeImportModal();
-}
-const MAX_IMPORT_FILE_BYTES=2*1024*1024;
-function safeImportName(name){
-  return String(name||"文件").replace(/[\u0000-\u001f\u007f]/g,"").trim().slice(0,120)||"文件";
-}
-async function importOneCredential(raw){
-  let payload={raw};
-  try{payload={json:JSON.parse(raw)}}catch(_){}
-  return api("/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-}
-async function importAuth(btn){
-  const imports=[];
-  const raw=(document.getElementById("importRaw").value||"").trim();
-  const files=document.getElementById("importFiles");
-  if(raw) imports.push({name:"粘贴内容",raw});
-  for(const file of Array.from(files.files||[])){
-    const name=safeImportName(file.name);
-    if(file.size>MAX_IMPORT_FILE_BYTES){imports.push({name,error:"超过 2 MiB"});continue}
-    try{imports.push({name,raw:await file.text()})}
-    catch(_){imports.push({name,error:"读取失败"})}
-  }
-  if(!imports.length){toast("请选择文件或粘贴凭证 JSON","warn");return}
-  busy(btn,true);
-  try{
-    const results=[];
-    for(const item of imports){
-      if(item.error){results.push({name:item.name,error:item.error});continue}
-      try{
-        const d=await importOneCredential(item.raw);
-        results.push({name:item.name,error:d.success?"":"导入失败"});
-      }catch(_){results.push({name:item.name,error:"请求失败"})}
-    }
-    document.getElementById("importRaw").value="";
-    files.value="";
-    const ok=results.filter(r=>!r.error).length;
-    const fail=results.length-ok;
-    const detail=results.map(r=>r.name+"："+(r.error||"成功")).join("；");
-    toast("导入完成",fail?"warn":"ok",ok+" 成功 / "+fail+" 失败 · "+detail);
-    if(fail===0) closeImportModal();
-    if(ok) await load(true)
-  }finally{busy(btn,false)}
-}
-document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
-document.addEventListener("keydown",e=>{
-  if(e.key=="Escape"&&document.getElementById("importModal").classList.contains("show")) closeImportModal();
-  if(e.key=="Escape"&&document.getElementById("desensitizeModal").classList.contains("show")) closeDesensitizeModal();
-  if(e.key=="Escape"&&document.getElementById("oauthModal").classList.contains("show")) closeOAuthModal();
-});
-let oauthState="";
-let oauthURL="";
-let oauthRegion="cn";
-let oauthDeadline=0;
-let oauthPollTimer=null;
-let oauthPollGeneration=0;
-
-function oauthStatusText(text,kind){
-  const el=document.getElementById("oauthStatus");
-  el.textContent=text;
-  el.className="oauth-status"+(kind?" "+kind:"");
-}
-function stopOAuthPolling(){
-  oauthPollGeneration++;
-  if(oauthPollTimer){
-    clearTimeout(oauthPollTimer);
-    oauthPollTimer=null;
-  }
-}
-function closeOAuthModal(){
-  stopOAuthPolling();
-  document.getElementById("oauthModal").classList.remove("show");
-}
-function onOAuthMaskClick(e){
-  if(e.target===document.getElementById("oauthModal")) closeOAuthModal();
-}
-// buildLoginURL assembles the address to open from the server's reply.
-//
-// ★ Do not just use d.url. The host HTML-escapes every string in a plugin
-// management response, so a URL arrives with its query separators written as the
-// literal characters "&amp;". The browser then treats "&amp;state=..." as one
-// nameless parameter, the state never reaches the login page, and the sign-in
-// ends on /login/started with an empty state showing "Login Failed".
-//
-// d.url_base carries no separator and d.query is an object, so the URL is rebuilt
-// here and URLSearchParams re-encodes each value on the way out. The old
-// string-only form still works as a fallback, with &amp; undone by hand, so an
-// older server that does not send the pieces keeps functioning.
-function buildLoginURL(d){
-  if(!d)return "";
-  if(d.url_base&&d.query){
-    try{
-      const u=new URL(d.url_base);
-      Object.entries(d.query).forEach(([k,v])=>{
-        if(Array.isArray(v)) v.forEach(x=>u.searchParams.append(k,String(x)));
-        else u.searchParams.set(k,String(v));
-      });
-      return u.toString();
-    }catch(_){}
-  }
-  return String(d.url||"").replace(/&amp;/g,"&");
-}
-function openOAuthURL(){
-  if(!oauthURL)return;
-  try{window.open(oauthURL,"_blank","noopener,noreferrer")}catch(_){}
-}
-async function copyOAuthURL(btn){
-  if(!oauthURL)return;
-  busy(btn,true);
-  try{
-    if(navigator.clipboard&&navigator.clipboard.writeText){
-      await navigator.clipboard.writeText(oauthURL);
-    }else{
-      const input=document.getElementById("oauthUrl");
-      input.focus();
-      input.select();
-      if(!document.execCommand||!document.execCommand("copy"))throw new Error("copy unsupported");
-    }
-    toast("登录链接已复制","ok");
-  }catch(_){
-    const input=document.getElementById("oauthUrl");
-    input.focus();
-    input.select();
-    toast("请手动复制登录链接","warn");
-  }finally{
-    busy(btn,false);
-  }
-}
-function scheduleOAuthPoll(generation){
-  oauthPollTimer=setTimeout(()=>pollOAuthLogin(generation),1500);
-}
-async function pollOAuthLogin(generation){
-  if(generation!==oauthPollGeneration)return;
-  if(Date.now()>=oauthDeadline){
-    oauthStatusText("登录会话已过期，请重新获取登录链接。","err");
-    stopOAuthPolling();
-    return;
-  }
-  try{
-    const d=await api("/oauth/poll",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({state:oauthState})});
-    if(generation!==oauthPollGeneration)return;
-    if(d.success){
-      const who=d.nickname?"：" + d.nickname:"";
-      oauthStatusText("登录成功"+who+"。账号已写入 CPA。","ok");
-      // Close it. The operator's next action is on the account list, and a
-      // finished login dialog left open sits on top of the row just added; the
-      // toast below is what confirms the result once the modal is gone.
-      // closeOAuthModal also stops the polling, so no separate stop is needed.
-      closeOAuthModal();
-      toast("OAuth 登录成功","ok",d.nickname||"WorkBuddy 账号已添加");
-      await load(true);
-      return;
-    }
-    if(d.done){
-      // d.error carries a terminal failure the server named (for example the
-      // browser sign-in worked but saving the credential did not). Reading only
-      // d.message here would flatten that into "登录失败" and send the operator
-      // off chasing a login that actually succeeded.
-      oauthStatusText(d.error||d.message||"登录失败，请重新获取登录链接。","err");
-      stopOAuthPolling();
-      return;
-    }
-    const left=Math.max(0,Math.ceil((oauthDeadline-Date.now())/1000));
-    oauthStatusText("等待浏览器完成登录…（剩余 "+left+" 秒）");
-    scheduleOAuthPoll(generation);
-  }catch(e){
-    if(generation!==oauthPollGeneration)return;
-    oauthStatusText("登录状态查询失败：" + String(e&&e.message||e),"err");
-    scheduleOAuthPoll(generation);
-  }
-}
-// startOAuthLogin opens a login session against one realm. The two realms are
-// separate account systems with separate model catalogs, so the region chosen
-// here decides which catalog the resulting account will see.
-async function startOAuthLogin(btn,region){
-  region=(region==="global")?"global":"cn";
-  oauthRegion=region;
-  stopOAuthPolling();
-  oauthState="";
-  oauthURL="";
-  oauthDeadline=0;
-  document.getElementById("oauthUrl").value="";
-  oauthStatusText("正在创建登录会话…");
-  const title=document.getElementById("oauthModalTitle");
-  if(title) title.textContent = region==="global" ? "OAuth 登录 · 国际账号（workbuddy.ai）" : "OAuth 登录 · CN 账号";
-  document.getElementById("oauthModal").classList.add("show");
-  busy(btn,true);
-  try{
-    const d=await api("/oauth/start",{method:"POST",body:JSON.stringify({region})});
-    if(!d.success||!d.url||!d.state)throw new Error(d.error||"登录会话创建失败");
-    // Trust the server's answer over the button pressed: if the host ignored the
-    // region, say so rather than labelling the page with the wrong realm.
-    if(d.region&&d.region!==region){
-      oauthRegion=d.region;
-      const t2=document.getElementById("oauthModalTitle");
-      if(t2) t2.textContent = d.region==="global" ? "OAuth 登录 · 国际账号（workbuddy.ai）" : "OAuth 登录 · CN 账号";
-    }
-    oauthState=d.state;
-    oauthURL=buildLoginURL(d);
-    // Fallback only: the server owns this window (loginTTL, currently 30 min) and
-    // sends it as expiresIn. The old literal here was 300, matching the previous
-    // 5-minute server value, and would have re-imposed the too-short deadline
-    // whenever the server reply omitted the field.
-    const seconds=Math.max(1,Number(d.expiresIn)||1800);
-    oauthDeadline=Date.now()+seconds*1000;
-    document.getElementById("oauthUrl").value=oauthURL;
-    oauthStatusText("请在浏览器完成登录，本页会自动检测。");
-    openOAuthURL();
-    scheduleOAuthPoll(oauthPollGeneration);
-  }catch(e){
-    oauthStatusText(String(e&&e.message||e),"err");
-  }finally{
-    busy(btn,false);
-  }
-}
-function openOAuthLogin(btn,region){
-  return startOAuthLogin(btn,region);
-}
-function restartOAuthLogin(btn){
-  return startOAuthLogin(btn,oauthRegion||"cn");
-}
-/* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
-if(window.__wbThemeSync)window.__wbThemeSync();
-async function loadInitial(){
-  if(getKey()){
-    if(await load(false)) loadEgressIP();
-  }else{
-    showAuth();
-  }
-}
-loadInitial();
-</script>
-</body>
-</html>
+.ctx-tier{display:inline-block;padding:0 3px;margin:0;border:0;background:none;color:var(--mut);font:inherit;font-size:12px;line-height:1.35;cursor:pointer;border-radius:4px}.ctx-tier:hover{background:var(--btn-sec-hover);color:var(--fg)}.ctx-tier:focus-visible{outline:2px solid var(--acc);outline-offset:1px}.ctx-tier-on{color:var(--acc);font-weight:700;cursor:default}.ctx-tier-on:hover{background:none;color:var(--acc)}

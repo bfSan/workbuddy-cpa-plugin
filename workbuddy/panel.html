@@ -90,6 +90,29 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .model-actions .ftag[disabled]{opacity:.4;cursor:default}
 .model-actions .badge,.model-actions .cd-badge{white-space:nowrap}
 .card,.summary{min-width:0;background:var(--card);border:1px solid var(--border);border-radius:12px}
+/* 活动卡：默认折叠成一行摘要，点标题展开明细。
+   折叠态只回答"现在有几个活动在打折"，不把 12 条活动全铺开——多数时候操作者
+   只关心当下能省多少，展开才需要看窗口和到期日。 */
+.promo-box{padding:12px 16px}.promo-hd{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}
+.promo-title{font-weight:700;font-size:14px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px}
+.promo-title::before{content:"▸";color:var(--mut);font-size:11px;transition:transform .15s ease}
+.promo-box.open .promo-title::before{transform:rotate(90deg)}
+.promo-live{color:var(--ok)}.promo-live.zero{color:var(--mut)}
+.promo-meta{color:var(--mut);font-size:12px}
+.promo-list{display:none;flex-direction:column;gap:5px;margin-top:10px}
+.promo-box.open .promo-list{display:flex}
+.promo-row{display:grid;grid-template-columns:minmax(84px,auto) minmax(140px,1.3fr) minmax(64px,auto) minmax(60px,auto) minmax(150px,1.2fr);gap:10px;align-items:center;padding:7px 9px;border-radius:8px;background:var(--surface);font-size:12px;border-left:3px solid var(--mut-border)}
+.promo-row.on{border-left-color:var(--ok);background:var(--ok-soft)}
+.promo-row.off{opacity:.72}
+.promo-badge{font-weight:700;color:var(--mut);white-space:nowrap}
+.promo-badge.on{color:var(--ok)}
+.promo-model{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.promo-more{color:var(--mut);font-weight:400;cursor:help}
+.promo-price{font-variant-numeric:tabular-nums;font-weight:700;color:var(--fg)}
+.promo-realm{color:var(--mut);font-size:11px}
+.promo-state{font-size:11px}
+.promo-state.on{color:var(--ok)}
+.promo-state.off{color:var(--mut)}
 .card{padding:16px}
 .card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center;gap:8px}
 .uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
@@ -264,6 +287,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
+  <div class="card promo-box" id="promoBox" style="display:none;margin-top:16px"></div>
   <div class="card" id="modelBox" style="margin-top:16px">
     <h2>模型列表 <span style="display:flex;gap:6px;align-items:center">
       <span class="badge" id="modelSource" title="当前模型目录的来源">—</span>
@@ -1085,15 +1109,171 @@ function contextFactsHTML(r,modelId){
   }
   return parts.join(" / ");
 }
+let lastPromotions={cn:[],global:[]};
+let promoClock=null;
+let promoClockAt=0;
+let promoTimer=null;
+function acceptPromotions(d){
+  lastPromotions=(d&&d.promotions)||{cn:[],global:[]};
+  promoClock=(d&&d.clock)||null;
+  promoClockAt=Date.now()/1000;
+  renderPromotions();
+  if(typeof renderModels==='function') renderModels();
+}
+function promoNow(){
+  if(!promoClock) return null;
+  const elapsed=Math.max(0,Date.now()/1000-promoClockAt);
+  return {unix:Number(promoClock.unix||0)+elapsed,minute:(Number(promoClock.minute||0)+Math.floor(elapsed/60))%1440};
+}
+function promoActive(p){
+  const now=promoNow(); if(!now||!p) return false;
+  if(p.validFromUnix!=null&&now.unix<Number(p.validFromUnix)) return false;
+  if(p.validUntilUnix!=null&&now.unix>=Number(p.validUntilUnix)) return false;
+  const windows=Array.isArray(p.windows)?p.windows:[];
+  if(!windows.length) return true;
+  return windows.some(w=>{
+    const start=Number(w.startMin), duration=Number(w.durationMin);
+    if(!Number.isFinite(start)||!Number.isFinite(duration)) return false;
+    if(duration>=1440) return true;
+    return ((now.minute-start+1440)%1440)<duration;
+  });
+}
+// promoLabel 取活动徽章文案。后端已按 labelZh → labelEn → label 取值写入
+// badgeLabel（上游 Global 侧会把英文文本放进 labelZh，所以 Global 账号显示英文
+// 是上游的意图，不是取错字段），这里只做兜底。
+function promoLabel(p){return String((p&&p.badgeLabel)||'活动').trim()||'活动'}
+// promoHasPrice 判定一条活动是否真的影响积分倍率。
+// 上游用「成对的活动」表达错峰折扣：一条描述夜间窗口并带 discount（真折扣），
+// 另一条描述白天窗口且不带 discount（只在官方 UI 上显示徽章，提醒"晚上会便宜"）。
+// 后者没有价格含义，列出来只会把"当前生效"的真实折扣淹掉，因此卡片不展示它们；
+// 模型行的徽章同样只认前者。
+function promoHasPrice(p){
+  if(!p) return false;
+  if(p.discounted) return true;
+  return p.factor!=null;
+}
+// promoPriceOf 返回该活动的折后倍率文案。上游折扣分两种表达：discounted 是它
+// 自己算好的结果串（"0.00x"/"0.50x"），优先采用；只有 factor 时自行合成，factor
+// 为 0 即免费，绝不把"未上报"显示成 0x。
+function promoPriceOf(p){
+  if(!p) return '—';
+  if(p.discounted) return String(p.discounted);
+  if(p.factor===0) return '免费 (0x)';
+  if(p.factor!=null) return String(p.factor)+'x';
+  return '活动标记';
+}
+// promoCountdown 用服务端时钟算出"还剩多久"，替代"循环活动"这种没有信息量的词。
+function promoCountdown(p, active){
+  const now=promoNow(); if(!now||!p) return '';
+  const secs=active&&p.validUntilUnix!=null?Number(p.validUntilUnix)-now.unix:null;
+  if(secs!=null&&Number.isFinite(secs)){
+    if(secs<=0) return '即将结束';
+    return '剩 '+promoHumanLeft(secs);
+  }
+  return p.validUntilDisplay?('至 '+p.validUntilDisplay):'长期有效';
+}
+function promoHumanLeft(sec){
+  const s=Math.max(0,Math.round(sec));
+  if(s<60) return s+' 秒';
+  const m=Math.floor(s/60);
+  if(m<60) return m+' 分';
+  const h=Math.floor(m/60);
+  if(h<24) return h+' 小时'+(m%60?' '+(m%60)+' 分':'');
+  const d=Math.floor(h/24);
+  if(d>=30) return Math.round(d/30)+' 个月';
+  return d+' 天';
+}
+function promoWindowText(p){
+  const ws=Array.isArray(p&&p.windows)?p.windows:[];
+  if(!ws.length)return '全天';
+  return ws.map(w=>`${w.startLabel||''}–${w.endLabel||''}`).join('、');
+}
+function promoEndText(p){
+  return p&&p.validUntilDisplay?String(p.validUntilDisplay):'长期';
+}
+// promoTitle 组装悬停文案。这里只讲这条活动本身（状态、折后价、时段、倒计时、
+// 上游原文），不重复"原价 → 折后价"——那一层由模型行的划线原价承担，两处都写
+// 会让 tooltip 变长且可能不一致。
+function promoTitle(p,active){
+  const bits=[promoLabel(p),active?'当前生效':'当前未生效',promoPriceOf(p),promoWindowText(p),promoCountdown(p,active),p&&p.text].filter(Boolean);
+  return bits.join(' · ');
+}
+function renderPromotions(){
+  const box=document.getElementById('promoBox'); if(!box)return;
+  const priced=[];
+  for(const realm of ['cn','global']) for(const p of (Array.isArray(lastPromotions[realm])?lastPromotions[realm]:[])) if(promoHasPrice(p)) priced.push({realm,p});
+  if(!priced.length){box.style.display='none';box.innerHTML='';return;}
+  // 按活动 ID 聚合，且跨 realm 合并。上游对 CN / Global 各发一份同名活动，内容
+  // 几乎相同（hy3、step-5 都是），分成两行会让"生效 5 条"里一半是重复。合并后
+  // 区域进独立列，模型取并集——两侧模型集合不同（CN 的 hy3 活动管三个 ID，
+  // Global 只管 hy3），取并集才不会漏报。
+  const byPromo=new Map();
+  for(const x of priced){
+    if(!byPromo.has(x.p.id)) byPromo.set(x.p.id,{promo:x.p,realms:new Set(),models:new Set()});
+    const g=byPromo.get(x.p.id);
+    g.realms.add(x.realm);
+    for(const id of (Array.isArray(x.p.modelIds)?x.p.modelIds:[])) if(id) g.models.add(id);
+    // 两侧折扣可能不同，保留更省的那份：factor 0（免费）优先，其次 factor 更小；
+    // 只有一份上报时保持原样，不用 null 覆盖有值的一侧。
+    const a=g.promo.factor, b=x.p.factor;
+    if((a==null&&b!=null)||(a!=null&&b!=null&&b<a)) g.promo=x.p;
+  }
+  const rows=[];
+  for(const g of byPromo.values()){
+    rows.push({promo:g.promo,realms:g.realms,models:[...g.models],active:promoActive(g.promo)});
+  }
+  const live=rows.filter(r=>r.active);
+  const later=rows.filter(r=>!r.active);
+  // 生效的排前面：先按折扣力度（越便宜越前），再按剩余时间（越快结束越前，
+  // 因为那才是最该抢的）；未生效的按折扣力度排。
+  const rank=r=>{
+    const p=r.promo;
+    return p.factor===0?0:(p.factor!=null?p.factor:1);
+  };
+  live.sort((a,b)=>rank(a)-rank(b));
+  later.sort((a,b)=>rank(a)-rank(b));
+  const rowHTML=r=>{
+    const p=r.promo;
+    const price=promoPriceOf(p);
+    // 一条活动覆盖多个模型时列出前两个，其余给计数，完整列表进 tooltip：不展开
+    // 就不会把行撑高，想看全部仍有入口。模型列表已按区域取并集。
+    const ids=r.models;
+    const shown=ids.slice(0,2).join(', ');
+    const more=ids.length>2?` <span class="promo-more" title="${esc(ids.join('、'))}">+${ids.length-2}</span>`:'';
+    const realms=[...r.realms].map(x=>x==='cn'?'CN':'Global').join(' / ');
+    // 未生效必须带上生效时段：只说"未生效"读者不知道几点回来，等于没给信息。
+    const win=promoWindowText(p);
+    const state=r.active
+      ? `<span class="promo-state on">生效中 · ${esc(promoCountdown(p,true))}</span>`
+      : `<span class="promo-state off">未生效 · 生效时段 ${esc(win)} · 至 ${esc(promoEndText(p))}</span>`;
+    return `<div class="promo-row ${r.active?'on':'off'}" title="${esc(promoTitle(p,r.active))}"><span class="promo-badge ${r.active?'on':'off'}">${esc(promoLabel(p))}</span><span class="promo-model">${esc(shown)}${more}</span><span class="promo-price">${esc(price)}</span><span class="promo-realm">${esc(realms)}</span>${state}</div>`;
+  };
+  box.style.display='block';
+  const head=`<div class="promo-hd"><div class="promo-title" id="promoToggle" title="点击展开/收起活动明细">上游活动 · <span class="promo-live${live.length?'':' zero'}">生效 ${live.length}</span>${later.length?` / 未生效 ${later.length}`:''}</div><div class="promo-meta">活动时钟 ${promoClock&&promoClock.zone||'UTC'} · 每 1 小时自动刷新</div></div>`;
+  const list=[...live.map(r=>rowHTML(r)),...later.map(r=>rowHTML(r))].join('');
+  // 展开态在重渲染之间保持：每小时一次的定时刷新不该把操作者手动展开的列表又收起来。
+  const wasOpen=box.classList.contains('open');
+  box.innerHTML=head+`<div class="promo-list">${list}</div>`;
+  if(wasOpen) box.classList.add('open');
+  const toggle=document.getElementById('promoToggle');
+  if(toggle&&!toggle._promoBound){toggle._promoBound=true;toggle.addEventListener('click',()=>box.classList.toggle('open'));}
+}
+async function loadPromotions(){
+  try{acceptPromotions(await api('/promotions'));}catch(e){
+    const box=document.getElementById('promoBox'); if(box){box.style.display='block';box.innerHTML='<div class="promo-meta">活动信息未加载：'+esc(e.message||String(e))+'</div>'}
+  }
+}
 function realmCell(m, realm, modelId){
   const r=m&&m[realm];
   if(!r||r.status==="not_loaded"||r.present===null) return "未加载";
   if(r.status==="absent"||r.present===false) return "—";
   if(r.status!=="present"&&r.present!==true) return "未加载";
+  // 倍率只报上游给的基准值（models[].credits）。活动折扣不在这一行呈现：活动卡
+  // 已经集中列出"哪些模型现在什么价"，这里再叠一层划线价/徽章会让同一件事在两处
+  // 出现，且本行的倍率原义是"账号基础倍率"，混入活动价后无法再回答"这个模型原价
+  // 多少"。要看折扣去上面的活动卡。
   const credit=creditText(r.credits||{});
   const think=thinkingText(r.thinking||{});
-  // 外层只说明"这是该分区的档位信息"，把"哪一档在生效"的解释权留给内层加粗项
-  // 自己的 title —— 嵌套 title 悬停时取最内层，外层再断言一次会互相打架。
   return `<div class="realm-facts"><span>倍率 ${esc(credit)}</span><span>思考 ${esc(think)}</span><span title="该分区上报的上下文档位；加粗项为当前实际生效档位">上下文 ${contextFactsHTML(r,modelId)}</span></div>`;
 }
 function renderModels(){
@@ -1308,8 +1488,12 @@ async function load(force, btn){
     renderSummary(accounts);
     // Lazy-load credits for cards that don't have them yet.
     lazyLoadCredits(accounts);
-    // Model catalog is independent of account cards; load it alongside.
+    // Model catalog and promotions are independent of account cards; load them alongside.
     loadModels(false);
+    loadPromotions();
+    // 活动列表按小时重算：30 秒一次的重排会把操作者的视线从别处拽回来，
+    // 而活动时段以小时为粒度，一分钟级抖动没有信息量。
+    if(!promoTimer) promoTimer=setInterval(()=>{renderPromotions();renderModels()},3600000);
     if(force){
       const errN=accounts.filter(a=>a.error).length;
       const life=(d.lifecycle||[]).length;

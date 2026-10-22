@@ -145,6 +145,18 @@ func cloneInt64(value *int64) *int64 {
 	return &copy
 }
 
+// cloneFloat64Ptr copies a float pointer. Promotion factors are pointers
+// because "upstream did not report a factor" (a badge-only teaser that does not
+// change the price) and "the factor is 0" (free) are different claims that a
+// plain float64 would collapse into the same zero value.
+func cloneFloat64Ptr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
 func matchModelsDevRecord(rawID string, records map[string]modelFacts) *modelFacts {
 	if record, ok := records[rawID]; ok {
 		return &record

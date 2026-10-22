@@ -184,6 +184,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
 			{Method: http.MethodGet, Path: base + "/models", Description: "List the effective model catalog with its source and per-model cooldown state. Add ?refresh=1 to re-discover every account's catalog upstream instead of serving the cached snapshots."},
+			{Method: http.MethodGet, Path: base + "/promotions", Description: "List upstream model promotions, tiers, normalized time windows and server clock by realm."},
 			{Method: http.MethodGet, Path: base + "/models/context", Description: "Get persistent per-model context-window overrides."},
 			{Method: http.MethodPost, Path: base + "/models/context", Description: "Set or clear one per-model context-window override."},
 			{Method: http.MethodPut, Path: base + "/models", Description: "Replace the model list overlay (hide/order/add)."},
@@ -271,6 +272,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveStatus()))
 	case req.Method == http.MethodGet && path == base+"/models":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelListQueryForce(req.Query.Get("refresh") != "", req.HostCallbackID)))
+	case req.Method == http.MethodGet && path == base+"/promotions":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildPanelPromotionsQuery()))
 	case req.Method == http.MethodPut && path == base+"/models":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelOverlayWrite(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/models/action":

@@ -65,8 +65,14 @@ type modelReadinessSnapshot struct {
 	Models            []pluginapi.ModelInfo
 	// Realm and ModelFacts describe the selected upstream catalog, before
 	// models.dev enrichment and process-wide credits/context overrides.
-	Realm            workBuddyRealm
-	ModelFacts       []modelFacts
+	Realm      workBuddyRealm
+	ModelFacts []modelFacts
+	// Promotions and Tiers are the catalog's campaign metadata (promotions.go).
+	// They follow the same snapshot lifecycle as ModelFacts so the panel reads
+	// one consistent view: a cache-loaded catalog brings its cached campaigns,
+	// and a refresh replaces both together.
+	Promotions       []modelPromotion
+	Tiers            []modelTier
 	configGeneration uint64
 	authGeneration   uint64
 	identitySHA256   string
@@ -371,6 +377,8 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 			FetchedAt:      time.Now().UTC(),
 			Endpoint:       catalog.Endpoint,
 			Models:         catalog.Models,
+			Promotions:     catalog.Promotions,
+			Tiers:          catalog.Tiers,
 		}
 		authCurrent, sharedFresh, waits, saveErr := r.saveModelsForGeneration(slot, key, authGeneration, identitySlot, identityCall, freshModels)
 		if !authCurrent {
@@ -425,6 +433,11 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	// Preserve untouched upstream facts independently of the served projection.
 	snapshot.Realm = modelSelection.cache.Realm
 	snapshot.ModelFacts = cloneModelFactsList(modelSelection.cache.Models)
+	// Campaigns are cloned for the same reason the facts are: a snapshot must
+	// not alias the cache document, or a later mutation would edit published
+	// panel data in place.
+	snapshot.Promotions = clonePromotionList(modelSelection.cache.Promotions)
+	snapshot.Tiers = cloneTierList(modelSelection.cache.Tiers)
 	models := discoveredModelInfos(modelSelection.cache.Models, metadata.cache.Records)
 	// Keep the full base catalog in the shared snapshot; handleModelForAuth
 	// applies hide/order/add to its response copy.
@@ -943,6 +956,8 @@ func cloneModelInfos(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 func cloneModelReadinessSnapshot(snapshot modelReadinessSnapshot) modelReadinessSnapshot {
 	snapshot.Models = cloneModelInfos(snapshot.Models)
 	snapshot.ModelFacts = cloneModelFactsList(snapshot.ModelFacts)
+	snapshot.Promotions = clonePromotionList(snapshot.Promotions)
+	snapshot.Tiers = cloneTierList(snapshot.Tiers)
 	return snapshot
 }
 

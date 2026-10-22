@@ -3,6 +3,7 @@ package main
 import (
 	"sort"
 	"strings"
+	"time"
 )
 
 // panelRealmSnapshotSource is one account's published snapshot for one realm,
@@ -35,6 +36,17 @@ type panelRealmSelection struct {
 	// duplicate can be compared against the current winner on (fetchedAt, authID)
 	// without re-deriving provenance.
 	factSource map[string]modelFactsSource
+	// promotions is the union of every usable snapshot's campaigns in this
+	// realm, keyed by campaign ID. Like facts, a duplicate ID resolves to a
+	// deterministic winner so the panel cannot show a campaign that flickers
+	// between two accounts' copies on consecutive refreshes.
+	promotions map[string]modelPromotion
+	// promotionOrder keeps first-seen insertion order for stable emission.
+	promotionOrder []string
+	// promotionSource records provenance for the duplicate tie-break.
+	promotionSource map[string]modelFactsSource
+	// tiers is the union of the realm's tier rows, keyed by tier ID.
+	tiers map[string]modelTier
 	// display is the newest usable snapshot, kept only for realm_status's
 	// state/source/fetched_at. loaded is not derived from it: one stale account
 	// must not make the whole realm look unloaded while its rows show facts.
@@ -106,6 +118,7 @@ func panelRealmSelectionAddFacts(selection panelRealmSelection, snap modelReadin
 		existing, seen := selection.facts[id]
 		if !seen {
 			selection.facts[id] = cloneModelFacts(fact)
+			selection.factSource[id] = source
 			selection.order = append(selection.order, id)
 			continue
 		}
@@ -117,7 +130,97 @@ func panelRealmSelectionAddFacts(selection panelRealmSelection, snap modelReadin
 			selection.factSource[id] = source
 		}
 	}
+	selection = panelRealmSelectionAddPromotions(selection, snap, source)
 	return selection
+}
+
+// panelRealmSelectionAddPromotions merges one account's campaigns into the realm
+// union.
+//
+// Campaigns are authored server-side and are identical across the accounts of a
+// realm in practice, but they are still merged with the same deterministic
+// tie-break as facts rather than "first one wins": the union must not depend on
+// the order the host happens to list auth files in, or a panel refresh could
+// swap which copy of a campaign is shown.
+func panelRealmSelectionAddPromotions(selection panelRealmSelection, snap modelReadinessSnapshot, source modelFactsSource) panelRealmSelection {
+	if len(snap.Promotions) == 0 && len(snap.Tiers) == 0 {
+		return selection
+	}
+	if selection.promotions == nil {
+		selection.promotions = make(map[string]modelPromotion)
+	}
+	if selection.promotionSource == nil {
+		selection.promotionSource = make(map[string]modelFactsSource)
+	}
+	if selection.tiers == nil {
+		selection.tiers = make(map[string]modelTier)
+	}
+	for _, promo := range snap.Promotions {
+		id := strings.TrimSpace(promo.ID)
+		if id == "" {
+			continue
+		}
+		_, seen := selection.promotions[id]
+		if !seen {
+			selection.promotions[id] = clonePromotion(promo)
+			selection.promotionOrder = append(selection.promotionOrder, id)
+			selection.promotionSource[id] = source
+			continue
+		}
+		if panelRealmSourceWins(source, selection.promotionSource[id]) {
+			selection.promotions[id] = clonePromotion(promo)
+			selection.promotionSource[id] = source
+		}
+	}
+	for _, tier := range snap.Tiers {
+		id := strings.TrimSpace(tier.ID)
+		if id == "" {
+			continue
+		}
+		if _, seen := selection.tiers[id]; !seen {
+			selection.tiers[id] = tier
+		}
+	}
+	return selection
+}
+
+// panelRealmSourceWins is the campaign analogue of panelRealmFactWins: newest
+// fetch wins, ties broken by the lexicographically smallest auth ID.
+func panelRealmSourceWins(candidate, current modelFactsSource) bool {
+	if candidate.authID == current.authID {
+		return false
+	}
+	if !candidate.snapshot.ModelsFetchedAt.Equal(current.snapshot.ModelsFetchedAt) {
+		return candidate.snapshot.ModelsFetchedAt.After(current.snapshot.ModelsFetchedAt)
+	}
+	return candidate.authID < current.authID
+}
+
+// realmPromotions returns the realm's campaigns in first-seen order.
+func (s panelRealmSelection) realmPromotions() []modelPromotion {
+	if len(s.promotions) == 0 {
+		return nil
+	}
+	out := make([]modelPromotion, 0, len(s.promotions))
+	for _, id := range s.promotionOrder {
+		if promo, ok := s.promotions[id]; ok {
+			out = append(out, promo)
+		}
+	}
+	return out
+}
+
+// realmTiers returns the realm's tier rows, ordered by ID for stability.
+func (s panelRealmSelection) realmTiers() []modelTier {
+	if len(s.tiers) == 0 {
+		return nil
+	}
+	out := make([]modelTier, 0, len(s.tiers))
+	for _, tier := range s.tiers {
+		out = append(out, tier)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // modelFactsSource identifies which snapshot a merged fact came from, so a later
@@ -159,6 +262,57 @@ func panelRealmSnapshotEquivalent(a, b modelReadinessSnapshot) bool {
 func buildPanelRealmCatalog() ([]map[string]any, map[string]any) {
 	selected := panelRealmSelections()
 	return buildPanelRealmModels(selected), buildPanelRealmStatus(selected)
+}
+
+// buildPanelPromotionsQuery serves the activity panel independently from the
+// model catalog. Promotions are per-realm (CN and Global receive different
+// /v3/config payloads), so the response is bucketed by realm just like
+// realm_models. The raw normalized windows are returned; the browser decides
+// whether each one is active using the supplied UTC clock and can therefore
+// flip at a daily boundary without another upstream request.
+func buildPanelPromotionsQuery() map[string]any {
+	selected := panelRealmSelections()
+	promotions := make(map[string][]modelPromotion, 2)
+	tiers := make(map[string][]modelTier, 2)
+	status := make(map[string]any, 2)
+	fetched := make(map[string]time.Time, 2)
+	now := time.Now()
+	for _, realm := range panelRealmList() {
+		key := string(realm)
+		selection := selected[realm]
+		promotions[key] = selection.realmPromotions()
+		tiers[key] = selection.realmTiers()
+		clock := promotionClock(promotions[key], now)
+		status[key] = map[string]any{
+			"loaded":         selection.loaded,
+			"status":         promotionPanelStatus(selection),
+			"clock":          clock,
+			"promotionCount": len(promotions[key]),
+		}
+		if selection.hasDisplay {
+			fetched[key] = selection.display.ModelsFetchedAt
+		}
+	}
+	return map[string]any{
+		"promotions": promotions,
+		"tiers":      tiers,
+		"status":     status,
+		"fetched_at": fetched,
+		"clock":      promoClock{Unix: now.UTC().Unix(), Minute: now.UTC().Hour()*60 + now.UTC().Minute(), Zone: "UTC"},
+	}
+}
+
+func promotionPanelStatus(selection panelRealmSelection) string {
+	if selection.loaded && len(selection.promotions) > 0 {
+		return "loaded"
+	}
+	if selection.hasDisplay && selection.display.State == modelFailed {
+		return "failed"
+	}
+	if selection.loaded {
+		return "empty"
+	}
+	return "not_loaded"
 }
 
 func buildPanelRealmModels(selected map[workBuddyRealm]panelRealmSelection) []map[string]any {

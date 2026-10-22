@@ -40,6 +40,17 @@ type modelCatalogCacheV1 struct {
 	FetchedAt      time.Time             `json:"fetched_at"`
 	Endpoint       workBuddyEndpointKind `json:"endpoint"`
 	Models         []modelFacts          `json:"models"`
+	// Promotions and Tiers are additive members of the same cache document.
+	//
+	// They are deliberately NOT a schema-version bump. Raising
+	// modelCacheSchemaVersion would invalidate every existing account's cache
+	// and force a full upstream re-discovery while CPA is serving traffic, and
+	// it would make a downgrade fail outright (validateModelCacheSchema rejects
+	// a version it does not know). With omitempty, a cache written by an older
+	// build simply decodes to nil here, which the panel already renders as
+	// "活动未加载" — the same degradation path as an upstream outage.
+	Promotions []modelPromotion `json:"promotions,omitempty"`
+	Tiers      []modelTier      `json:"tiers,omitempty"`
 }
 
 type modelStore struct {
@@ -240,6 +251,42 @@ func validateModelCatalogCache(cache modelCatalogCacheV1, identitySHA256 string,
 	for i := range validated {
 		if validated[i].ID != cache.Models[i].ID || validated[i].Name != cache.Models[i].Name {
 			return fmt.Errorf("model cache models are not normalized")
+		}
+	}
+	// Promotions are validated for shape but never for presence: an older cache
+	// has none, and that is a legitimate "activity not loaded" state rather than
+	// a corrupt document. Dropping the whole cache over it would throw away a
+	// perfectly good model catalog.
+	if err := validateModelPromotions(cache.Promotions); err != nil {
+		return fmt.Errorf("model cache promotions are invalid: %w", err)
+	}
+	return nil
+}
+
+// validateModelPromotions bounds the stored campaigns. The management response
+// and the panel render these verbatim, so the cache is the last place a
+// runaway value can be caught before it reaches an operator's browser.
+func validateModelPromotions(promos []modelPromotion) error {
+	if len(promos) > maxPromotions {
+		return fmt.Errorf("promotion count %d exceeds %d", len(promos), maxPromotions)
+	}
+	for i, promo := range promos {
+		if strings.TrimSpace(promo.ID) == "" {
+			return fmt.Errorf("promotion %d has an empty id", i)
+		}
+		if len(promo.ModelIDs) > maxPromotionModelIDs {
+			return fmt.Errorf("promotion %s has too many model ids", promo.ID)
+		}
+		if len(promo.Windows) > maxPromotionWindows {
+			return fmt.Errorf("promotion %s has too many windows", promo.ID)
+		}
+		for _, window := range promo.Windows {
+			if window.StartMin < 0 || window.StartMin > 1439 {
+				return fmt.Errorf("promotion %s window start is out of range", promo.ID)
+			}
+			if window.DurationMin <= 0 || window.DurationMin > 1440 {
+				return fmt.Errorf("promotion %s window duration is out of range", promo.ID)
+			}
 		}
 	}
 	return nil

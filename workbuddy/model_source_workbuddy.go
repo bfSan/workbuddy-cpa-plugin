@@ -144,6 +144,12 @@ type workBuddyCatalog struct {
 	Realm    workBuddyRealm        `json:"realm"`
 	Endpoint workBuddyEndpointKind `json:"endpoint"`
 	Models   []modelFacts          `json:"models"`
+	// Promotions and Tiers are the sibling keys of data.models in the same
+	// /v3/config payload (see promotions.go). They ride along with the catalog
+	// because they share its fetch and its per-account cache entry, but they are
+	// never merged into Models: they describe campaigns, not models.
+	Promotions []modelPromotion `json:"promotions,omitempty"`
+	Tiers      []modelTier      `json:"tiers,omitempty"`
 }
 
 type workBuddyAgentWire struct {
@@ -153,7 +159,7 @@ type workBuddyAgentWire struct {
 
 // workBuddyRichModelWire is one entry of /v3/config's data.models rich
 // catalog. Only the fields the plugin can act on are decoded; unknown keys
-// (promotions, tiers, related models) stay ignored on purpose.
+// (related models) stay ignored on purpose.
 type workBuddyContextWindowWire struct {
 	DefaultLength    *int64  `json:"defaultLength"`
 	SupportedLengths []int64 `json:"supportedLengths"`
@@ -697,12 +703,29 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 		// few entries the desktop list omits. Neither is a superset, so the
 		// served catalog is their union. The CLI fetch is best-effort: a failure
 		// there must not discard the desktop catalog that already parsed.
+		// The CLI fetch is best-effort: a failure there must not discard the
+		// desktop catalog that already parsed. Promotions are NOT taken from it
+		// either — the CLI identity is served a narrower payload that omits
+		// them, and merging an empty list would erase the desktop campaigns.
 		if cliResp, cliErr := request("/v3/config", clientUA); cliErr == nil && cliResp.StatusCode == http.StatusOK {
 			if cliModels, parseErr := parseWorkBuddyV3Config(cliResp.Body); parseErr == nil {
 				models = mergeModelCatalog(models, cliModels)
 			}
 		}
-		return workBuddyCatalog{Realm: realm, Endpoint: workBuddyEndpointV3Config, Models: models}, nil
+		// Campaigns are panel metadata. A malformed promotions block is logged
+		// and dropped; it must never fail a catalog that already parsed, or one
+		// upstream schema change would take the whole model list down with it.
+		promotions, tiers, promoErr := parseWorkBuddyV3Promotions(resp.Body)
+		if promoErr != nil {
+			promotions, tiers = nil, nil
+		}
+		return workBuddyCatalog{
+			Realm:      realm,
+			Endpoint:   workBuddyEndpointV3Config,
+			Models:     models,
+			Promotions: promotions,
+			Tiers:      tiers,
+		}, nil
 	}
 	if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed {
 		return workBuddyCatalog{}, &modelSourceError{Kind: modelSourceHTTPFailure, StatusCode: resp.StatusCode}

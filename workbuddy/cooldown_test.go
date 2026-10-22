@@ -67,11 +67,11 @@ func TestModelIsCooling_ExpiresOnItsOwn(t *testing.T) {
 	}
 }
 
-func TestRecordUpstreamFailure_LeavesHardCreditToLifecycle(t *testing.T) {
+func TestRecordUpstreamFailure_UnprovenCreditScopeStaysOnPair(t *testing.T) {
 	resetCooldowns(t)
 	recordUpstreamFailure("wb-a", "model-1", 402, `{"message":"insufficient credit"}`)
-	if got := cooldownSnapshotAll(); len(got) != 0 {
-		t.Fatalf("402 is the lifecycle path's job, got %+v", got)
+	if got := cooldownSnapshotAll(); len(got) != 1 || got[0]["scope"] != quotaScopeModel || got[0]["reason"] != string(cooldownReasonCreditQuota) {
+		t.Fatalf("credit refusal must freeze only the current pair, got %+v", got)
 	}
 	recordUpstreamFailure("wb-a", "model-1", 429, `{"message":"too many requests"}`)
 	if !modelIsCooling("wb-a", "model-1") {

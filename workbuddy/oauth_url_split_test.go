@@ -121,6 +121,7 @@ func TestPanelRebuildsLoginURLFromParts(t *testing.T) {
 // TestOAuthStartReturnsURLParts checks the server actually sends the pieces the
 // panel depends on.
 func TestOAuthStartReturnsURLParts(t *testing.T) {
+	t.Cleanup(func() { loginStates.Delete("s1") })
 	oldFeatures := featureRuntime.Load()
 	oldProxy := currentProxyState()
 	proxyState.Store(&proxyRoutingState{mode: proxyModeInherit})

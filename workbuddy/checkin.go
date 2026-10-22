@@ -70,33 +70,45 @@ func nextCheckinTime(now time.Time) time.Time {
 }
 
 func checkinLoop(stop chan struct{}) {
+	next := nextCheckinTime(time.Now())
 	for {
-		next := nextCheckinTime(time.Now())
-		timer := time.NewTimer(time.Until(next))
+		// Wake at most once per 30s for bounded retries. Preserve next across
+		// retry ticks so 09:00/21:00 actions are not re-run on every wake.
+		wait := time.Until(next)
+		if wait > 30*time.Second {
+			wait = 30 * time.Second
+		}
+		if wait < 0 {
+			wait = 0
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-stop:
 			timer.Stop()
 			return
 		case <-timer.C:
-			runCheckin, runKeepalive, runCatalogRefresh := scheduledActionsFor(time.Now())
-			if runCheckin {
-				runAutoCheckin()
+			now := time.Now()
+			if !now.Before(next) {
+				runCheckin, runKeepalive, runCatalogRefresh := scheduledActionsFor(now)
+				if runCheckin {
+					runAutoCheckin()
+				}
+				if runKeepalive {
+					runTokenKeepalive()
+				}
+				if runCatalogRefresh {
+					runScheduledCatalogRefresh()
+				}
+				next = nextCheckinTime(time.Now())
 			}
-			if runKeepalive {
-				runTokenKeepalive()
-			}
-			if runCatalogRefresh {
-				// Last, so the check-in/keepalive ticks have settled before the
-				// multiplier the panel reads is re-discovered.
-				runScheduledCatalogRefresh()
-			}
+			runDueCheckinRetries()
 		}
 	}
 }
 
 // runAutoCheckin is the scheduled lifecycle tick (09:00 / 21:00).
 // CN: optional daily check-in, then reconcile (disable exhausted / reenable after credits).
-// Global: no auto trial (one-shot claim is manual only); reconcile may delete exhausted auths.
+// Global: no auto claim; reconciliation must never delete exhausted credentials.
 //
 // v0.6.31: per-account work runs concurrently (sem=4) — was serial, so N accounts
 // meant 3N serial HTTP round-trips on the billing API. Matches the pattern used
@@ -131,76 +143,11 @@ func runAutoCheckin() {
 // processAutoCheckinAccount handles one account's scheduled tick. Extracted so
 // runAutoCheckin can fan out per-account work without duplicating logic.
 func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
-	// A-24: only fetch sa when needed (checkin). For lifecycle-only paths,
-	// let reconcileOneAccount do the single hostAuthGetBundle internally.
 	if doCheckin {
-		sa, err := hostAuthGet(f.AuthIndex)
-		if err != nil {
-			return
-		}
-		if isGlobalDomain(sa.Auth.Domain) {
-			// Global: never check-in or auto-claim trial. Lifecycle only.
-			// Invalidate cache (copy entry, set credits=nil, keep plan/checkin).
-			if v, ok := accountCache.Load(f.ID); ok {
-				if e, ok2 := v.(*accountCacheEntry); ok2 {
-					fresh := *e
-					fresh.credits = nil
-					fresh.fetched = time.Now()
-					accountCache.Store(f.ID, &fresh)
-				}
-			}
-			if lifecycleEnabled() {
-				_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
-			}
-			return
-		}
-		withCheckinLock(f.AuthIndex, func() {
-			// CN: daily check-in when enabled.
-			ci, err := fetchCheckinStatus(sa)
-			if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
-				if _, callErr := performCheckinCall(sa); callErr == nil {
-					// Refresh once after a successful checkin call so cache reflects
-					// the post-call state. If the status call fails keep the pre-call
-					// snapshot rather than dropping it (v0.6.31: avoid shadowing ci
-					// with a second fetch that could race with concurrent readers).
-					if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
-						ci = ci2
-					}
-					// P1-5: checkin grants new credits — refresh the credits cache
-					// immediately so the panel shows the updated balance without
-					// waiting for the async reconcile pass.
-					if cr2, crErr := fetchUserResource(sa); crErr == nil && cr2 != nil {
-						if v, ok := accountCache.Load(f.ID); ok {
-							if prev, ok2 := v.(*accountCacheEntry); ok2 {
-								fresh := *prev
-								fresh.credits = cr2
-								fresh.fetched = time.Now()
-								accountCache.Store(f.ID, &fresh)
-							}
-						}
-					}
-				}
-			}
-			// Refresh cache with latest checkin status (merge, don't wipe credits/plan).
-			if ci != nil {
-				var prev *accountCacheEntry
-				if v, ok := accountCache.Load(f.ID); ok {
-					prev, _ = v.(*accountCacheEntry)
-				}
-				entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
-				if prev != nil {
-					entry.credits = prev.credits
-					entry.plan = prev.plan
-				}
-				accountCache.Store(f.ID, entry)
-			}
-		})
-		if lifecycleEnabled() {
-			_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
-		}
-		return
+		_ = checkinOneAccountFrom(f, "", "scheduled")
 	}
-	// Lifecycle-only (checkin off): reconcile handles its own get.
+	// Never reconcile under the per-account check-in lock: lifecycle helpers
+	// acquire the same lock and preserve explicit manual disables.
 	if lifecycleEnabled() {
 		_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 	}
@@ -208,8 +155,8 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 
 // handleManualCheckin serves POST /checkin.
 //
-// Single-account mode (body.auth_index set): runs checkinOneAccount directly —
-// one hostAuthGet + at most two upstream calls (status, then check-in). The
+// Single-account mode (body.auth_index set): one auth read and at most three
+// upstream operations (status, claim, confirmation). No sleep in the RPC. The
 // old three-phase classify/execute/summarize pipeline ran the same framework
 // for one account as for thirty (4 RPC + 5 HTTP + lock-held re-reads), which
 // routinely blew past the 30s management API timeout: the check-in succeeded
@@ -232,7 +179,7 @@ func handleManualCheckinWithCallback(req pluginapi.ManagementRequest, callbackID
 
 	files, err := hostAuthList()
 	if err != nil {
-		return map[string]any{"error": err.Error()}
+		return checkinListError()
 	}
 	var targets []pluginapi.HostAuthFileEntry
 	for _, f := range files {
@@ -260,7 +207,7 @@ func handleManualCheckinWithCallback(req pluginapi.ManagementRequest, callbackID
 
 	// Summary counters (field names are a panel contract — panel.html
 	// checkinAll reads success/already/fail/skipped_global/eligible).
-	successN, failN, alreadyN, globalN, eligibleN := 0, 0, 0, 0, 0
+	successN, failN, alreadyN, globalN, eligibleN, pendingN, noneN := 0, 0, 0, 0, 0, 0, 0
 	for _, out := range results {
 		if out == nil {
 			continue
@@ -276,6 +223,13 @@ func handleManualCheckinWithCallback(req pluginapi.ManagementRequest, callbackID
 			continue
 		case "global":
 			globalN++
+			continue
+		case "pending_confirmation":
+			pendingN++
+			eligibleN++
+			continue
+		case "no_activity", "disabled":
+			noneN++
 			continue
 		}
 		eligibleN++
@@ -294,103 +248,122 @@ func handleManualCheckinWithCallback(req pluginapi.ManagementRequest, callbackID
 			"already":        alreadyN,
 			"skipped_global": globalN,
 			"fail":           failN,
+			"pending":        pendingN,
+			"no_activity":    noneN,
 			"attempted":      eligibleN,
 		},
 	}
 }
 
-// checkinOneAccount performs the daily check-in for one account with the
-// minimum number of round-trips:
-//
-//	hostAuthGet ×1 (RPC) → domain gate → fetchCheckinStatus ×1 (failure
-//	tolerated, upstream is idempotent) → performCheckinCall ×1.
-//
-// No lock-held re-reads, no lifecycle reconcile (that is the scheduled
-// runAutoCheckin path's job), no redundant status refetches. Cache updates
-// merge into the previous entry so credits/plan survive.
+// Manual, scheduled and retry paths share the same confirmation contract.
 func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 	return checkinOneAccountWithCallback(f, "")
 }
 
 func checkinOneAccountWithCallback(f pluginapi.HostAuthFileEntry, callbackID string) map[string]any {
-	out := map[string]any{"auth_index": f.AuthIndex}
+	return checkinOneAccountFrom(f, callbackID, "manual")
+}
 
-	sa, err := hostAuthGet(f.AuthIndex)
-	if err != nil {
-		out["error"] = err.Error()
-		return out
-	}
-	out["nickname"] = sa.Account.Nickname
-
-	if isGlobalDomain(sa.Auth.Domain) {
-		out["success"] = false
-		out["skipped"] = true
-		out["reason"] = "global"
-		out["message"] = "国际版账号不支持签到，请使用领取专家加油包"
-		return out
-	}
-
+func checkinOneAccountFrom(f pluginapi.HostAuthFileEntry, callbackID, source string) map[string]any {
 	mu := checkinLockFor(f.AuthIndex)
 	mu.Lock()
 	defer mu.Unlock()
-
-	// Status probe: a failure here is NOT fatal — the check-in call below is
-	// idempotent upstream and its business message tells us "already" anyway.
-	ci, ciErr := fetchCheckinStatusWithCallback(sa, callbackID)
-	if ciErr == nil && ci != nil && ci.TodayCheckedIn {
-		mergeCheckinCache(f.ID, ci)
-		out["success"] = true
-		out["skipped"] = true
-		out["reason"] = "already"
-		out["message"] = "already checked in today"
-		return out
+	if !checkinRuns.reserve(f.AuthIndex, time.Now()) {
+		return map[string]any{"auth_index": f.AuthIndex, "success": false, "confirmed": false, "state": "failed", "reason": "capacity", "message": "签到任务容量已满，请等待现有任务完成"}
 	}
-
-	res, err := performCheckinCallWithCallback(sa, callbackID)
-	if err != nil {
-		out["error"] = err.Error()
-		out["success"] = false
-		return out
-	}
-	for k, v := range res {
-		out[k] = v
-	}
-	// Business soft-fail ("already checked in" family) → done, not failure.
-	if msg, _ := out["message"].(string); msg != "" && out["success"] == false {
-		low := strings.ToLower(msg)
-		if strings.Contains(low, "already") || strings.Contains(msg, "已签") || strings.Contains(msg, "今日") {
-			out["success"] = true
-			out["skipped"] = true
-			out["reason"] = "already"
+	defer checkinRuns.release(f.AuthIndex)
+	confirmOnly := checkinRuns.needsConfirmation(f.AuthIndex, time.Now())
+	if source == "retry" {
+		var due bool
+		confirmOnly, due = checkinRuns.retryMode(f.AuthIndex, time.Now())
+		if !due {
+			return map[string]any{"auth_index": f.AuthIndex, "skipped": true, "reason": "cancelled", "success": false}
 		}
 	}
-	if _, ok := out["success"]; !ok {
-		out["success"] = true
+	sa, phys, err := hostAuthGetBundle(f.AuthIndex)
+	if err != nil {
+		return checkinRuns.rememberResult(f.AuthIndex, f.ID, source, checkinAttemptResult{State: "failed", Message: "无法读取账号凭据，未发起签到"})
 	}
-
-	// Post-call cache refresh: one extra status fetch at most; on failure
-	// write a TodayCheckedIn placeholder rather than leaving the panel stale.
-	if ci2, err2 := fetchCheckinStatusWithCallback(sa, callbackID); err2 == nil && ci2 != nil {
-		mergeCheckinCache(f.ID, ci2)
-	} else {
-		mergeCheckinCache(f.ID, &checkinSummary{TodayCheckedIn: true})
+	if isGlobalDomain(sa.Auth.Domain) {
+		return checkinRuns.rememberResult(f.AuthIndex, f.ID, source, checkinAttemptResult{State: "global", Message: "当前区域不支持该签到接口"})
 	}
+	// Background attempts never override a manual pause. Explicit manual
+	// check-in is still permitted, but never toggles the credential's state.
+	if source != "manual" && (f.Disabled || phys != nil && phys.Disabled) {
+		return checkinRuns.rememberResult(f.AuthIndex, f.ID, source, checkinAttemptResult{State: "disabled", Message: "账号已禁用，跳过后台签到"})
+	}
+	result := confirmedCheckinAttempt(checkinProtocol{
+		status: func() (*checkinSummary, error) { return fetchCheckinStatusWithCallback(sa, callbackID) },
+		claim:  func() (map[string]any, error) { return performCheckinCallWithCallback(sa, callbackID) },
+	}, confirmOnly)
+	if result.Status != nil {
+		mergeCheckinCache(f.ID, result.Status)
+	}
+	out := checkinRuns.rememberResult(f.AuthIndex, f.ID, source, result)
+	out["nickname"] = sa.Account.Nickname
 	return out
+}
+
+// Runs due work on the existing timer rather than spawning unbounded per-click
+// goroutines. Every retry checks today's budget and current account state again.
+func runDueCheckinRetries() {
+	checkinAutoMu.RLock()
+	auto := checkinAuto
+	checkinAutoMu.RUnlock()
+	due := checkinRuns.due(time.Now(), auto)
+	if len(due) == 0 {
+		return
+	}
+	files, err := hostAuthList()
+	if err != nil {
+		return
+	}
+	byIndex := make(map[string]pluginapi.HostAuthFileEntry, len(files))
+	for _, f := range files {
+		byIndex[f.AuthIndex] = f
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+	for _, idx := range due {
+		f, ok := byIndex[idx]
+		if !ok {
+			checkinRuns.cancel(idx)
+			continue
+		}
+		wg.Add(1)
+		go func(f pluginapi.HostAuthFileEntry) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			out := checkinOneAccountFrom(f, "", "retry")
+			if out["confirmed"] == true && lifecycleEnabled() {
+				_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
+			}
+		}(f)
+	}
+	wg.Wait()
 }
 
 // mergeCheckinCache stores the latest check-in snapshot while preserving the
 // credits/plan fields of any previous cache entry (merge, not replace).
 func mergeCheckinCache(authID string, ci *checkinSummary) {
-	var prev *accountCacheEntry
-	if v, ok := accountCache.Load(authID); ok {
-		prev, _ = v.(*accountCacheEntry)
+	observed := time.Now()
+	for {
+		prev, exists := accountCache.Load(authID)
+		entry := &accountCacheEntry{checkin: ci, checkinAt: observed}
+		if exists {
+			if cached, ok := prev.(*accountCacheEntry); ok {
+				entry.credits, entry.plan = cached.credits, cached.plan
+				// A check-in query does not refresh the age of the credit snapshot.
+				entry.fetched = cached.fetched
+			}
+			if accountCache.CompareAndSwap(authID, prev, entry) {
+				return
+			}
+		} else if _, loaded := accountCache.LoadOrStore(authID, entry); !loaded {
+			return
+		}
 	}
-	entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
-	if prev != nil {
-		entry.credits = prev.credits
-		entry.plan = prev.plan
-	}
-	accountCache.Store(authID, entry)
 }
 
 func withCheckinLock(authIndex string, fn func()) {

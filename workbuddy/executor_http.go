@@ -48,9 +48,24 @@ func handleExecHTTPRequest(raw []byte) ([]byte, error) {
 		httpReq.Header = make(http.Header)
 	}
 	backendHeaders(httpReq, sa)
+	// The generic transport can also carry chat requests. Do not let it bypass
+	// plugin-owned holds, but never apply them to billing/catalog/OAuth calls.
+	isChat := executorHTTPIsChat(target, sa)
+	model := ""
+	if isChat {
+		model = executorHTTPModel(req.Body)
+		if blocked := guardExecutorQuota(req.AuthID, model); blocked != nil {
+			return blocked, nil
+		}
+	}
 	resp, err := hostHTTPDoWithCallback(httpReq, req.HostCallbackID)
 	if err != nil {
 		return nil, fmt.Errorf("executor HTTP request: %w", err)
+	}
+	if isChat {
+		if failure := executorHTTPChatFailure(req.AuthID, model, resp.StatusCode, resp.Body, resp.Headers); failure != nil {
+			return errorEnvelopeFor(failure), nil
+		}
 	}
 	return okEnvelope(pluginapi.ExecutorHTTPResponse{
 		StatusCode: resp.StatusCode,
@@ -71,6 +86,44 @@ func validateExecutorHTTPURL(target *url.URL, sa *storedAuth) error {
 		!strings.EqualFold(target.Hostname(), expected.Hostname()) ||
 		target.Port() != expected.Port() {
 		return fmt.Errorf("executor HTTP request: upstream host %q is not allowed", target.Host)
+	}
+	return nil
+}
+
+// validateExecutorHTTPURL must run before this path comparison; a foreign realm
+// must never become eligible merely by spelling the same chat path.
+func executorHTTPIsChat(target *url.URL, sa *storedAuth) bool {
+	expected, err := url.Parse(endpointChatFor(sa))
+	return err == nil && target != nil && target.Path == expected.Path
+}
+
+func executorHTTPModel(body []byte) string {
+	var obj struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &obj) != nil {
+		return ""
+	}
+	// This is already an upstream HTTP payload. Do not guess OAuth aliases or
+	// route across realms; a missing/invalid model permits only account guards.
+	return strings.TrimSpace(obj.Model)
+}
+
+func executorHTTPChatFailure(authID, model string, status int, body []byte, headers http.Header) *upstreamStatusError {
+	if status >= 400 {
+		recordUpstreamFailureWithHeaders(authID, model, status, string(body), headers)
+		return chatUpstreamError(status, string(body))
+	}
+	if failure := chatStreamFrameError(string(body)); failure != nil {
+		recordUpstreamFailureWithHeaders(authID, model, status, string(body), headers)
+		return failure
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		content := stripDataPrefix(line)
+		if failure := chatStreamFrameError(content); failure != nil {
+			recordUpstreamFailureWithHeaders(authID, model, status, content, headers)
+			return failure
+		}
 	}
 	return nil
 }

@@ -300,6 +300,7 @@ func TestPanelLoginFallbackMatchesServerWindow(t *testing.T) {
 // client, since the panel counts down from expiresIn rather than from its own
 // constant.
 func TestLoginTTLReachesThePanelResponse(t *testing.T) {
+	t.Cleanup(func() { loginStates.Delete("s1") })
 	// The start path also needs a non-proxied routing state, or it fails before
 	// reaching the client.
 	oldProxy := currentProxyState()

@@ -245,7 +245,8 @@ func TestPumpUpstreamStreamEmitFailureDoesNotEmitSecondError(t *testing.T) {
 	}
 }
 
-func TestSynchronousExecutorsReturnTypedHTTPStatus(t *testing.T) {
+func TestSynchronousExecutorsKeepQuotaOffCredentialStatus(t *testing.T) {
+	resetCooldowns(t)
 	const authID = "typed-http-status-ready"
 	installModelStatesForTest(t, map[string]modelReadinessState{authID: modelReady})
 	oldClient := sharedHTTPClient()
@@ -280,8 +281,8 @@ func TestSynchronousExecutorsReturnTypedHTTPStatus(t *testing.T) {
 			if err := json.Unmarshal(raw, &env); err != nil {
 				t.Fatal(err)
 			}
-			if env.OK || env.Error == nil || env.Error.Code != "http_error" || env.Error.HTTPStatus != http.StatusTooManyRequests {
-				t.Fatalf("envelope = %#v", env)
+			if env.OK || env.Error == nil || env.Error.HTTPStatus != 0 || !strings.Contains(env.Error.Message, "unexpected EOF") {
+				t.Fatalf("quota must not become credential-wide status: %#v", env)
 			}
 			if strings.Contains(env.Error.Message, "status-secret-token") {
 				t.Fatalf("unredacted message: %q", env.Error.Message)

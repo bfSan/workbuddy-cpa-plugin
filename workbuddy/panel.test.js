@@ -1001,8 +1001,10 @@ test("realm facts escape dynamic values and never use inline handlers", async ()
   assert.match(rendered, /倍率 0\.34x/);
   assert.match(rendered, /思考 默认 high（low\/high）/);
   // 加粗给生效值（300K），不是上游默认档（600K）。
-  assert.match(rendered, /<b class="ctx-default" title="当前生效档位（上游能力）[^"]*">300K<\/b>/);
-  assert.doesNotMatch(rendered, /<b class="ctx-default"[^>]*>600K<\/b>/);
+  assert.match(rendered, /<button[^>]*class="ctx-tier ctx-tier-on"[^>]*data-ctx-tokens="300000"[^>]*aria-pressed="true"[^>]*title="当前生效档位（300K）[^"]*">300K<\/button>/);
+  assert.doesNotMatch(rendered, /class="ctx-tier ctx-tier-on"[^>]*>600K<\/button>/);
+  assert.match(rendered, /data-ctx-tier="model-&quot;quote&quot;"/);
+  assert.match(rendered, /class="ctx-tier"[^>]*data-ctx-tokens="600000"[^>]*aria-pressed="false"/);
   assert.doesNotMatch(rendered, /onclick=|credits/);
   assert.match(rendered, /data-model-action="toggle"/);
 });
@@ -1052,6 +1054,6 @@ test("context bolding: a missing source still yields a readable tooltip", async 
   });
   await panel.context.loadModels(false);
   const rendered = panel.elements.get("modelList").innerHTML;
-  assert.match(rendered, /<b class="ctx-default" title="当前生效档位（来源未上报）[^"]*">128K<\/b>/);
+  assert.match(rendered, /<button[^>]*class="ctx-tier ctx-tier-on"[^>]*data-ctx-tokens="128000"[^>]*aria-pressed="true"[^>]*title="当前生效档位（128K）[^"]*">128K<\/button>/);
   assert.doesNotMatch(rendered, /title=""/);
 });

@@ -45,9 +45,17 @@ func upstreamReadError(err error) error {
 type upstreamStatusError struct {
 	status  int
 	message string
+	code    string
 }
 
 func (e *upstreamStatusError) Error() string { return e.message }
+
+func (e *upstreamStatusError) ErrorCode() string {
+	if e == nil {
+		return ""
+	}
+	return e.code
+}
 
 // StatusCode exposes the upstream status to CPA's error classifier.
 //
@@ -133,7 +141,11 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		defer cancel()
 	}
 
-	stream, statusCode, _, err := hostHTTPDoStreamWithCallback(httpReq, callbackID)
+	if blocked := quotaFreezeError(authID, upstreamModel); blocked != nil {
+		streamEmitError(streamID, blocked.Error())
+		return
+	}
+	stream, statusCode, responseHeaders, err := hostHTTPDoStreamWithCallback(httpReq, callbackID)
 	if err != nil {
 		publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		streamEmitError(streamID, fmt.Sprintf("http_error: %v", err))
@@ -144,11 +156,11 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		// Drain the error body via the same bridge so the message is complete.
 		errPayload, _ := io.ReadAll(newHostStreamReader(stream))
 		publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(errPayload))
-		recordUpstreamFailure(authID, upstreamModel, statusCode, string(errPayload))
+		recordUpstreamFailureWithHeaders(authID, upstreamModel, statusCode, string(errPayload), responseHeaders)
 		if authUID != "" {
 			go reconcileByUID(authUID, statusCode, string(errPayload))
 		}
-		streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(string(errPayload), 200)))
+		streamEmitError(streamID, chatUpstreamError(statusCode, string(errPayload)).Error())
 		return
 	}
 	collector := &sseUsageCollector{}
@@ -162,6 +174,12 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		}
 		if content == "[DONE]" {
 			break
+		}
+		if fault := chatStreamFrameError(content); fault != nil {
+			recordUpstreamFailureWithHeaders(authID, upstreamModel, http.StatusOK, content, responseHeaders)
+			publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, fault.Error())
+			streamEmitError(streamID, fault.Error())
+			return
 		}
 		collector.feed(content)
 		cleaned := cleanChunkJSON(content)
@@ -209,7 +227,10 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 	}
 	backendHeaders(httpReq, sa)
 	// Compliance: route via host.http.do_stream so request-log captures the call.
-	stream, statusCode, _, err := hostHTTPDoStreamWithCallback(httpReq, callbackID)
+	if blocked := quotaFreezeError(authID, upstreamModel); blocked != nil {
+		return nil, 0, blocked
+	}
+	stream, statusCode, responseHeaders, err := hostHTTPDoStreamWithCallback(httpReq, callbackID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("http_error: %w", err)
 	}
@@ -217,16 +238,15 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 	reader := newHostStreamReader(stream)
 	if statusCode >= 400 {
 		errPayload, _ := io.ReadAll(reader)
-		recordUpstreamFailure(authID, upstreamModel, statusCode, string(errPayload))
+		recordUpstreamFailureWithHeaders(authID, upstreamModel, statusCode, string(errPayload), responseHeaders)
 		if sa != nil && sa.Account.UID != "" {
 			go reconcileByUID(sa.Account.UID, statusCode, string(errPayload))
 		}
-		return nil, statusCode, &upstreamStatusError{
-			status:  statusCode,
-			message: fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(string(errPayload), 200)),
-		}
+		return nil, statusCode, chatUpstreamError(statusCode, string(errPayload))
 	}
-	chunks, errAgg := aggregateSSEWithCollector(reader, sseFramed, collector)
+	chunks, errAgg := aggregateSSEObserved(reader, sseFramed, collector, func(content string) {
+		recordUpstreamFailureWithHeaders(authID, upstreamModel, http.StatusOK, content, responseHeaders)
+	})
 	if errAgg != nil {
 		return chunks, statusCode, errAgg
 	}
@@ -259,6 +279,10 @@ func clientNeedsSSEFrame(metadata map[string]any) bool {
 // failed. The collector, when non-nil, observes raw upstream chunks for usage
 // extraction.
 func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageCollector) ([]pluginapi.ExecutorStreamChunk, error) {
+	return aggregateSSEObserved(r, sseFramed, collector, nil)
+}
+
+func aggregateSSEObserved(r io.Reader, sseFramed bool, collector *sseUsageCollector, observeFailure func(string)) ([]pluginapi.ExecutorStreamChunk, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	var chunks []pluginapi.ExecutorStreamChunk
@@ -270,6 +294,12 @@ func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageC
 		}
 		if content == "[DONE]" {
 			break
+		}
+		if fault := chatStreamFrameError(content); fault != nil {
+			if observeFailure != nil {
+				observeFailure(content)
+			}
+			return chunks, fault
 		}
 		if collector != nil {
 			collector.feed(content)
@@ -355,6 +385,18 @@ func cleanChunkJSON(s string) string {
 }
 
 func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
+	return aggregateCompletionObserved(r, model, nil)
+}
+
+// aggregateCompletionWithQuota is the non-stream executor hook. The upstream
+// still speaks SSE; business error frames must freeze before returning failure.
+func aggregateCompletionWithQuota(r io.Reader, model, authID, upstreamModel string, headers http.Header) ([]byte, error) {
+	return aggregateCompletionObserved(r, model, func(content string) {
+		recordUpstreamFailureWithHeaders(authID, upstreamModel, http.StatusOK, content, headers)
+	})
+}
+
+func aggregateCompletionObserved(r io.Reader, model string, observeFailure func(string)) ([]byte, error) {
 	var content, reasoning, role, respModel, respID, finish string
 	var created int64
 	var usage map[string]any
@@ -376,6 +418,12 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 		}
 		if data == "[DONE]" {
 			break
+		}
+		if fault := chatStreamFrameError(data); fault != nil {
+			if observeFailure != nil {
+				observeFailure(data)
+			}
+			return nil, fault
 		}
 		var chunk map[string]any
 		if json.Unmarshal([]byte(data), &chunk) != nil {

@@ -5,8 +5,8 @@
 // tracks failures at the (authID, modelID) pair so only the affected pair is
 // reported as throttled.
 //
-// Account-wide failures (invalid token, hard credit exhaustion) stay with the
-// existing lifecycle path — this table is only for the narrow case.
+// Confirmed shared-credit exhaustion uses an account-scoped entry in this same
+// bounded table. Credential invalidation stays separate in lifecycle handling.
 //
 // State is process-local: it survives config reloads but not a CPA restart.
 package main
@@ -44,9 +44,14 @@ type modelCooldownKey struct {
 }
 
 type modelCooldownEntry struct {
-	Reason    cooldownReason
-	Until     time.Time
-	UpdatedAt time.Time
+	Reason            cooldownReason
+	Scope             string
+	Until             time.Time
+	NextProbeAt       time.Time
+	OccurredAt        time.Time
+	UpdatedAt         time.Time
+	RecoveryCondition string
+	Evidence          string
 }
 
 var (
@@ -72,46 +77,14 @@ func markModelCooldown(authID, model string, reason cooldownReason) {
 	default:
 		ttl = modelCooldownUnknown
 	}
-	now := cooldownNowFn()
-	cooldownMu.Lock()
-	defer cooldownMu.Unlock()
-	cooldownSweepLocked(now)
-	if len(cooldownTable) >= modelCooldownMaxEntries {
-		// Drop the entry closest to expiry to make room.
-		oldestKey := modelCooldownKey{}
-		oldestUntil := time.Time{}
-		first := true
-		for k, v := range cooldownTable {
-			if first || v.Until.Before(oldestUntil) {
-				oldestKey, oldestUntil, first = k, v.Until, false
-			}
-		}
-		delete(cooldownTable, oldestKey)
-	}
-	cooldownTable[modelCooldownKey{AuthID: authID, ModelID: model}] = modelCooldownEntry{
-		Reason:    reason,
-		Until:     now.Add(ttl),
-		UpdatedAt: now,
-	}
+	markQuotaFreeze(authID, model, chatFailure{Reason: reason, Scope: quotaScopeModel, Evidence: "legacy_cooldown"}, cooldownNowFn().Add(ttl), "bounded_ttl_probe")
 }
 
 // modelCoolingUntil reports when the pair becomes usable again. The zero time
 // means the pair is not cooling down.
 func modelCoolingUntil(authID, model string) time.Time {
-	authID = strings.TrimSpace(authID)
-	model = strings.TrimSpace(model)
-	if authID == "" || model == "" {
-		return time.Time{}
-	}
-	now := cooldownNowFn()
-	cooldownMu.Lock()
-	defer cooldownMu.Unlock()
-	entry, ok := cooldownTable[modelCooldownKey{AuthID: authID, ModelID: model}]
+	entry, ok := quotaFreezeFor(authID, model)
 	if !ok {
-		return time.Time{}
-	}
-	if !entry.Until.After(now) {
-		delete(cooldownTable, modelCooldownKey{AuthID: authID, ModelID: model})
 		return time.Time{}
 	}
 	return entry.Until
@@ -138,7 +111,7 @@ func coolingModelSetFor(authID string) map[string]struct{} {
 	defer cooldownMu.Unlock()
 	var out map[string]struct{}
 	for key, entry := range cooldownTable {
-		if key.AuthID != authID {
+		if key.AuthID != authID || key.ModelID == "" {
 			continue
 		}
 		if !entry.Until.After(now) {
@@ -194,13 +167,7 @@ func cooldownSnapshotFor(authID string) []map[string]any {
 		if k.AuthID != authID || !v.Until.After(now) {
 			continue
 		}
-		out = append(out, map[string]any{
-			"model":      k.ModelID,
-			"reason":     string(v.Reason),
-			"until":      v.Until.UTC().Format(time.RFC3339),
-			"seconds":    int(v.Until.Sub(now).Round(time.Second) / time.Second),
-			"updated_at": v.UpdatedAt.UTC().Format(time.RFC3339),
-		})
+		out = append(out, quotaSnapshotRow(k, v, now))
 	}
 	cooldownMu.Unlock()
 	sortCooldownSnapshot(out)
@@ -230,19 +197,9 @@ func cooldownSweepLocked(now time.Time) {
 }
 
 // recordUpstreamFailure routes an upstream error to the right cooling path.
-// Model-scoped throttling lands in this table; everything else is left to the
-// existing lifecycle logic so account-level behaviour is unchanged.
+// Only explicit shared-credit evidence may broaden the scope beyond the pair.
 func recordUpstreamFailure(authID, model string, status int, body string) {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return
-	}
-	if isHardCreditError(status, body) {
-		return
-	}
-	if isSoftRateLimit(status, body) {
-		markModelCooldown(authID, model, cooldownReasonRateLimit)
-	}
+	recordUpstreamFailureWithHeaders(authID, model, status, body, nil)
 }
 
 // cooldownAccountCount reports how many pairs are cooling for one account.
@@ -261,14 +218,9 @@ func cooldownSnapshotAll() []map[string]any {
 		if !v.Until.After(now) {
 			continue
 		}
-		out = append(out, map[string]any{
-			"auth_id":    k.AuthID,
-			"model":      k.ModelID,
-			"reason":     string(v.Reason),
-			"until":      v.Until.UTC().Format(time.RFC3339),
-			"seconds":    int(v.Until.Sub(now).Round(time.Second) / time.Second),
-			"updated_at": v.UpdatedAt.UTC().Format(time.RFC3339),
-		})
+		row := quotaSnapshotRow(k, v, now)
+		row["auth_id"] = k.AuthID
+		out = append(out, row)
 	}
 	cooldownMu.Unlock()
 	sortCooldownSnapshotByAuth(out)

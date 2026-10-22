@@ -125,6 +125,8 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .cooldown-list{margin-top:8px;display:flex;flex-direction:column;gap:6px}
 .cooldown-row{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px}
+.checkin-record{padding:8px 0;border-top:1px solid var(--border);overflow-wrap:anywhere}
+.cooldown-detail{min-width:0;flex:1;overflow-wrap:anywhere}
 .cooldown-row .cd-model{font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
 .cooldown-row .cd-left{color:var(--warn);font-variant-numeric:tabular-nums;flex:0 0 auto}
 .filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
@@ -270,10 +272,12 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   <div class="bar">
     <button class="sec" id="oauthLoginBtn" onclick="openOAuthLogin(this,'cn')">登录 CN 账号</button>
     <button class="sec" id="oauthLoginIntlBtn" onclick="openOAuthLogin(this,'global')" title="登录国际账号（workbuddy.ai）。国际账号的模型目录与国内不同。">登录国际账号</button>
+    <button class="sec" id="oauthResumeBtn" hidden onclick="resumeOAuthLogin()">恢复登录查询</button>
     <button class="sec" id="importBtn" onclick="openImportModal()">导入凭证</button>
     <button class="sec" onclick="openDesensitizeModal()">屏蔽词设置</button>
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
+    <button class="sec" onclick="openCheckinHistory()">签到运行记录</button>
     <label class="toggle" title="仅 CN 账号 09:00 / 21:00"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到(CN)</label>
     <span class="toggle" id="svtime"></span>
   </div>
@@ -287,6 +291,11 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
+  <section class="card" id="checkinHistoryBox" hidden style="margin-top:16px" aria-label="签到运行记录">
+    <div class="summary-hd"><h2 id="checkinHistoryTitle">签到运行记录</h2><button class="sec" onclick="refreshCheckinHistory(this)">手动刷新记录</button></div>
+    <p id="checkinHistoryMeta" class="pb-meta" role="status"></p>
+    <div id="checkinHistoryList" style="max-height:420px;overflow:auto"></div>
+  </section>
   <div class="card promo-box" id="promoBox" style="display:none;margin-top:16px"></div>
   <div class="card" id="modelBox" style="margin-top:16px">
     <h2>模型列表 <span style="display:flex;gap:6px;align-items:center">
@@ -314,7 +323,8 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
         <input id="oauthUrl" class="field-input" type="text" readonly aria-label="OAuth 登录地址">
         <button type="button" class="sec" onclick="copyOAuthURL(this)">复制</button>
       </div>
-      <p class="hint">请在浏览器中完成登录。本页会自动轮询，成功后账号将直接写入 CPA。</p>
+      <p class="hint">请保留页面，后台不会自主轮询。关闭弹窗会暂停查询，但保留待完成会话；同标签刷新后可点“恢复登录查询”。仅保存会话标识、截止时间和区域，不保存登录链接或凭据。</p>
+      <div id="oauthPendingList" class="actions" aria-label="待完成登录"></div>
     </div>
     <div class="modal-ft">
       <button type="button" class="sec" onclick="restartOAuthLogin(this)">重新获取</button>
@@ -473,7 +483,7 @@ function markTrialDone(btn){
   btn.dataset.orig="已领取";
 }
 function fmtRemain(c){if(!c)return "-";const t=(c.total_remain||0)+(c.total_used||0);return c.total_remain+" 余 / "+t+" 总"}
-function esc(s){return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function progressHTML(c){
   // total uses size when known; remain = spendable, used = cycle spend.
   // Check-in adds packs → size/remain go UP (grant). Chat spend → used goes UP, remain DOWN.
@@ -500,6 +510,7 @@ function bindCardActions(root){
       const act=ev.currentTarget.dataset.action;
       const idx=ev.currentTarget.dataset.authIndex;
       if(act==="checkin") checkin(idx, ev.currentTarget);
+      else if(act==="checkin-history") openCheckinHistory(idx);
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
       else if(act==="cooldown-clear") clearCooldown(ev.currentTarget.getAttribute("data-auth-id")||idx, ev.currentTarget.getAttribute("data-model"), ev.currentTarget);
       else if(act==="rename") renameAccount(idx, ev.currentTarget.dataset.nick||"");
@@ -544,6 +555,14 @@ async function setAccountDisabled(idx, disabled, nick, btn){
   }catch(e){toast(e.message||String(e))}
   finally{busy(btn,false)}
 }
+function freezeReasonText(value){
+  const labels={rate_limit:"请求频率受限",call_quota:"调用次数额度耗尽",credit_quota:"积分额度耗尽",shared_credits_exhausted:"账号共享积分已耗尽",upstream_error:"上游暂时异常"};
+  return Object.prototype.hasOwnProperty.call(labels,value)?labels[value]:String(value||"临时限流");
+}
+function freezeRecoveryText(value){
+  const labels={upstream_retry_after:"到上游指定重试时间后允许探测",upstream_reset:"等待上游额度重置后探测",bounded_ttl_probe:"短暂冻结结束后有限探测"};
+  return Object.prototype.hasOwnProperty.call(labels,value)?labels[value]:String(value||"冷却结束后允许探测");
+}
 function card(a){
   const plan=(a.plan||"unknown").toLowerCase();
   const ci=a.checkin||{}, cr=a.credits;
@@ -555,20 +574,25 @@ function card(a){
   // 仅 CN 提供每日签到；Global 不显示签到或领取权益按钮。
   let actionHTML="";
   if(!isGlobal){
-    const checked=ci.today_checked_in;
+    const checked=Object.prototype.hasOwnProperty.call(ci,"confirmed")?ci.confirmed===true:ci.today_checked_in===true;
     const btnClass=checked?"done":"sec";
     const btnText=checked?"已签到":"签到";
     const btnDisabled=checked?" disabled=\"disabled\"":"";
-    actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`;
+    actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button><button class="sec" data-action="checkin-history" data-auth-index="${esc(a.auth_index)}">签到记录</button>`;
   }
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
   const cooling=Array.isArray(a.cooling)?a.cooling.filter(c=>Number(c&&c.seconds)>0):[];
-  const coolingBadge=cooling.length?`<span class="badge cooling" title="按模型维度的临时冷却">冷却 ${cooling.length}</span>`:"";
+  const coolingBadge=cooling.length?`<span class="badge cooling" title="账号共享额度或模型临时冻结；解除不会启用手动禁用账号">冷却 ${cooling.length}</span>`:"";
   const badges=(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+coolingBadge+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
   const coolingHTML=cooling.length?`<div class="cooldown-list">`+cooling.map(c=>{
-    const model=String(c.model||"");
-    const left=Number(c.seconds)||0;
-    return `<div class="cooldown-row"><span class="cd-model">${esc(model)}</span><span class="cd-left">${fmtLeft(left)}</span><button type="button" class="ftag" data-action="cooldown-clear" data-auth-index="${esc(a.auth_index)}" data-auth-id="${esc(a.auth_id||a.auth_index)}" data-model="${esc(model)}" aria-label="解除 ${esc(model)} 的冷却">解除</button></div>`;
+    const accountScope=c.scope==="account";
+    const model=accountScope?"":String(c.model||"");
+    const label=accountScope?"账号共享额度":model;
+    const reason=freezeReasonText(c.reason);
+    const recovery=freezeRecoveryText(c.recovery_condition);
+    const details="作用范围："+(accountScope?"账号共享额度（全部模型）":"模型 "+model)+" · 原因："+reason+" · 恢复条件："+recovery+(c.message?" · "+String(c.message):"");
+    const timing=[c.occurred_at?"发生 "+displayStatusTime(c.occurred_at):"",c.next_probe_at?"下次探测 "+displayStatusTime(c.next_probe_at):"",c.until?"冻结至 "+displayStatusTime(c.until):"",c.persistent===false?"仅当前进程保存（重启清空）":""].filter(Boolean).join(" · ");
+    return `<div class="cooldown-row" title="${esc(details)}"><div class="cooldown-detail"><span class="cd-model">${esc(label)}</span><div class="pb-meta">${esc(details)}</div><div class="pb-meta">${esc(timing)}</div><div class="pb-meta">解除冻结不解除手动禁用</div></div><span class="cd-left">${fmtLeft(Number(c.seconds)||0)}</span><button type="button" class="ftag" data-action="cooldown-clear" data-auth-index="${esc(a.auth_index)}" data-auth-id="${esc(a.auth_id||a.auth_index)}" data-model="${esc(model)}" title="仅解除冻结，不解除手动禁用" aria-label="解除 ${esc(label)} 的冷却">解除</button></div>`;
   }).join("")+`</div>`:"";
   const nick=a.nickname||a.label||a.name||"该账号";
   // 手工启停：与自动生命周期脱钩。禁用不会写入 disabled_reason，避免被
@@ -1515,50 +1539,107 @@ async function load(force, btn){
     if(force) busy(btn, false);
   }
 }
-function checkinResultToast(res, who){
-  const name=res.nickname||who||"账号";
-  if(res.error){toast(name+"：签到失败","err",res.error);return}
-  if(res.reason==="global"||(/国际版|不支持/.test(String(res.message||"")))){
-    toast(name+"：国际版不提供签到","warn",res.message||"当前仅支持 CN 签到");return;
-  }
-  if(res.reason==="already"||(res.skipped&&/already|已签|今日/.test(String(res.message||"")))){
-    toast(name+"：今日已签到","ok",res.message||"");return;
-  }
-  if(res.success){toast(name+"：签到成功","ok","+"+(res.credit??res.daily_credit??"")+" 积分 · 连续 "+(res.streak_days??"?")+" 天");return}
-  toast(name+"："+(res.message||"未知结果"),"warn");
-}
 function isCheckinDoneResult(res){
-  if(!res||res.error) return false;
-  if(res.reason==="global") return false;
-  if(res.success) return true;
-  const msg=String(res.message||"");
-  // already checked in today (backend) — treat as done, not failure
-  if(/already|已签|今日/.test(msg) && !/国际版|不支持/.test(msg)) return true;
-  return false;
+  if(!res)return false;
+  // New confirmed=false always beats legacy success/already or human wording.
+  if(Object.prototype.hasOwnProperty.call(res,"confirmed"))return res.confirmed===true;
+  return !res.error&&res.success===true&&res.reason==="already";
 }
-async function checkin(idx, btn){
+function checkinStateLabel(res){
+  if(isCheckinDoneResult(res))return "已确认签到";
+  const labels={success:"待确认",already:"待确认",pending_confirmation:"等待上游确认",no_activity:"当前无签到活动",failed:"签到失败",global:"Global 不提供签到",disabled:"账号已禁用"};
+  return labels[res&&res.state]||"尚未确认";
+}
+function displayStatusTime(value){
+  const raw=String(value||"");
+  return !raw||raw.startsWith("0001-")?"—":raw.replace("T"," ").replace("Z"," UTC");
+}
+function checkinNextRetry(res){
+  if(res.retry_allowed===false||res.retry_scheduled===false)return "";
+  const value=displayStatusTime(res.next_retry_at);
+  return value==="—"?"":value;
+}
+function checkinResultToast(res,who){
+  const name=res.nickname||who||"账号";
+  if(isCheckinDoneResult(res)){toast(name+"：已确认签到","ok");return}
+  const nextRetry=checkinNextRetry(res);
+  const detail=nextRetry?"下次重试："+nextRetry:"查看签到运行记录了解进度";
+  toast(name+"："+checkinStateLabel(res),res.error||res.state==="failed"?"err":"warn",detail);
+}
+function applyCheckinResults(results){
+  // Match by identity, never mark all cards based on one aggregate success.
+  for(const res of results){
+    const a=lastAccounts.find(a=>(res.auth_index!=null&&String(a.auth_index)===String(res.auth_index))||(res.auth_id&&a.auth_id===res.auth_id));
+    if(!a)continue;
+    a.checkin=Object.assign({},a.checkin||{},{confirmed:isCheckinDoneResult(res),today_checked_in:isCheckinDoneResult(res),state:res.state,next_retry_at:res.next_retry_at});
+  }
+}
+let checkinHistoryIndex="";
+let checkinHistoryGeneration=0;
+function checkinRecordHTML(r){
+  const details=[r.message||"",r.confirm_only?"仅复查状态，不重复领取":"",r.retry_allowed?"允许有限重试":"",r.manual?"手动触发":"",checkinNextRetry(r)?"下次重试 "+checkinNextRetry(r):""];
+  return `<div class="checkin-record"><div><strong>${esc(r.auth_index||r.auth_id||"账号")}</strong> · ${esc(checkinStateLabel(r))} · ${esc(r.source||"未知来源")} · ${esc(r.day||"")}</div><div class="pb-meta">${esc(displayStatusTime(r.at))} · 重试 ${esc(String(r.retry_count??0))} 次 · ${isCheckinDoneResult(r)?"已确认":"未确认"}</div><div class="pb-meta">${details.filter(Boolean).map(v=>esc(String(v))).join(" · ")}</div></div>`;
+}
+function renderCheckinHistory(d){
+  const list=value=>Array.isArray(value)?value:(value&&typeof value==="object"?(value.state?[value]:Object.values(value)):[]);
+  const latest=list(d.latest),history=list(d.history).slice(-100).reverse();
+  const schedule=typeof d.schedule==="string"?d.schedule:JSON.stringify(d.schedule||[]);
+  const delays=Array.isArray(d.retry_delays_seconds)?d.retry_delays_seconds:[60,120,300];
+  document.getElementById("checkinHistoryMeta").textContent=(d.enabled?"自动签到已开启":"自动签到已关闭")+" · 计划 "+schedule+" · 最多重试 "+(d.max_retries??3)+" 次（"+delays.join(" / ")+" 秒） · 记录仅当前进程保存，重启清空";
+  document.getElementById("checkinHistoryList").innerHTML=(latest.length?'<h3>当前进度</h3>'+latest.map(checkinRecordHTML).join(""):"<p>暂无运行记录</p>")+(history.length?'<h3>最近记录（最多 100 条）</h3>'+history.map(checkinRecordHTML).join(""):"");
+}
+async function refreshCheckinHistory(btn){
+  const generation=++checkinHistoryGeneration,index=checkinHistoryIndex;
+  busy(btn,true);
+  try{
+    const d=await api("/checkin/status"+(index?"?auth_index="+encodeURIComponent(index):""));
+    if(generation!==checkinHistoryGeneration)return;
+    if(d.error)throw new Error("status unavailable");
+    renderCheckinHistory(d);
+  }catch(_){if(generation===checkinHistoryGeneration)document.getElementById("checkinHistoryMeta").textContent="读取签到记录失败，请检查管理权限或稍后刷新（旧后端可能不支持）。"}
+  finally{busy(btn,false)}
+}
+function openCheckinHistory(idx){
+  checkinHistoryIndex=idx==null?"":String(idx);
+  const box=document.getElementById("checkinHistoryBox");box.hidden=false;
+  document.getElementById("checkinHistoryTitle").textContent="签到运行记录"+(checkinHistoryIndex?" · 账号 "+checkinHistoryIndex:" · 全部账号");
+  document.getElementById("checkinHistoryList").innerHTML="";
+  document.getElementById("checkinHistoryMeta").textContent="读取中…";
+  if(box.scrollIntoView)box.scrollIntoView({block:"nearest"});
+  return refreshCheckinHistory();
+}
+async function checkin(idx,btn){
   busy(btn,true);
   try{
     const d=await api("/checkin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
-    const res=(d.results||[])[0]||{};
+    if(d.error)throw new Error("checkin unavailable");
+    const rows=d.results||[];
+    const res=rows.find(r=>String(r.auth_index)===String(idx))||(rows.length===1&&rows[0].auth_index==null?rows[0]:{})||{};
     checkinResultToast(res);
-    if(isCheckinDoneResult(res)){
-      // Instant UI — do NOT busy(false) which restores "签到" before load finishes
-      markCheckinDone(btn);
-      // Optimistic local state so partial re-renders stay correct
-      const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
-      if(a){
-        a.checkin=Object.assign({}, a.checkin||{}, {today_checked_in:true});
-      }
-    }else{
-      busy(btn,false);
-    }
-    // Await reload so card matches server; cache was cleared on backend for this account
+    applyCheckinResults([Object.assign({auth_index:idx},res)]);
+    if(isCheckinDoneResult(res))markCheckinDone(btn);else busy(btn,false);
     await load(false);
-  }catch(e){
-    toast("签到请求失败","err",e.message);
-    busy(btn,false);
-  }
+    if(!document.getElementById("checkinHistoryBox").hidden)await refreshCheckinHistory();
+  }catch(_){toast("签到请求失败","err","请检查管理权限或网络后重试");busy(btn,false)}
+}
+async function checkinAll(btn){
+  busy(btn,true);
+  try{
+    const d=await api("/checkin",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    if(d.error)throw new Error("checkin unavailable");
+    const rs=d.results||[],confirmed=rs.filter(isCheckinDoneResult).length;
+    const failed=rs.filter(r=>!isCheckinDoneResult(r)&&(r.error||r.state==="failed")).length;
+    const pending=rs.filter(r=>!isCheckinDoneResult(r)&&!["global","disabled","no_activity"].includes(r.state)&&!r.error&&r.state!=="failed").length;
+    applyCheckinResults(rs);
+    document.querySelectorAll('#grid [data-action="checkin"]').forEach(b=>{
+      const res=rs.find(r=>r.auth_index!=null&&String(r.auth_index)===String(b.dataset.authIndex));
+      if(isCheckinDoneResult(res))markCheckinDone(b);
+    });
+    toast("批量签到："+confirmed+" 已确认 / "+pending+" 待确认 / "+failed+" 失败",failed?"err":pending||!confirmed?"warn":"ok","仅已确认的账号标为已签到；可查看签到运行记录");
+    await load(false);
+    if(!document.getElementById("checkinHistoryBox").hidden)await refreshCheckinHistory();
+  }catch(_){toast("批量签到失败","err","请检查管理权限或网络后重试")}
+  finally{busy(btn,false)}
 }
 async function refreshCredits(idx, btn){
   busy(btn,true);
@@ -1589,51 +1670,318 @@ async function refreshCredits(idx, btn){
     busy(btn,false);
   }
 }
-async function checkinAll(btn){
+async function toggleAuto(on){
+  try{const d=await api("/checkin/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});toast("自动签到已"+(d.checkin_auto?"开启 ✅":"关闭 ⏸"),"ok")}catch(e){toast("设置失败","err",e.message)}
+}
+function renderDesensitizeSettings(d){
+  document.getElementById("desensitizeEnabled").checked=!!d.enabled;
+  document.getElementById("desensitizeTerms").value=(d.terms||[]).join("\n");
+  document.getElementById("desensitizeSource").textContent=d.source==="custom"?"自定义词表":"内置默认词表";
+}
+async function loadDesensitizeSettings(){
+  renderDesensitizeSettings(await api("/desensitize"));
+}
+function sameDesensitizeTerms(left,right){
+  return Array.isArray(left)&&left.length===right.length&&left.every((term,i)=>term===right[i]);
+}
+async function waitForDesensitizeSettings(matches){
+  for(let attempt=0;attempt<20;attempt++){
+    const d=await api("/desensitize");
+    if(matches(d)){
+      renderDesensitizeSettings(d);
+      return;
+    }
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  throw new Error("设置已写入，但运行时未应用");
+}
+async function openDesensitizeModal(){
+  try{
+    await loadDesensitizeSettings();
+    document.getElementById("desensitizeModal").classList.add("show");
+  }catch(e){toast("读取屏蔽词设置失败","err",e.message||String(e))}
+}
+function closeDesensitizeModal(){
+  document.getElementById("desensitizeModal").classList.remove("show");
+}
+function onDesensitizeMaskClick(e){
+  if(e.target===document.getElementById("desensitizeModal")) closeDesensitizeModal();
+}
+async function saveDesensitize(btn){
+  const terms=[...new Set(document.getElementById("desensitizeTerms").value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean))];
+  const enabled=document.getElementById("desensitizeEnabled").checked;
   busy(btn,true);
   try{
-    // Backend prefilters: Global skipped, already-checked skipped; only CN-need-checkin run.
-    const d=await api("/checkin",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
-    const rs=d.results||[];
-    const s=d.summary||{};
-    const ok=Number(s.success??rs.filter(x=>x.success&&x.reason!=="already"&&!x.skipped).length)||0;
-    const already=Number(s.already??rs.filter(x=>isCheckinDoneResult(x)&&(x.reason==="already"||x.skipped||!x.success)).length)||0;
-    const fail=Number(s.fail??rs.filter(x=>x.error).length)||0;
-    const skippedGlobal=Number(s.skipped_global||0);
-    const eligible=Number(s.eligible??(ok+fail))||0;
-    const detailParts=[];
-    if(skippedGlobal) detailParts.push("跳过 Global "+skippedGlobal);
-    if(already) detailParts.push("今日已签 "+already);
-    if(eligible) detailParts.push("待签 "+eligible);
-    const detail=detailParts.join(" · ");
-    if(d.error){toast("批量签到失败","err",d.error)}
-    else if(fail){
-      const errDetail=rs.filter(x=>x.error).map(x=>(x.nickname||"")+": "+x.error).join("；");
-      toast("批量签到："+ok+" 成功 / "+fail+" 失败"+(already?" / "+already+" 已签":""),"err",errDetail||detail);
-    }else if(ok){
-      toast("批量签到："+ok+" 成功"+(already?" / "+already+" 今日已签":""),"ok",detail);
-    }else if(already||skippedGlobal){
-      toast("无需签到","ok",detail||"CN 今日已签 · Global 已跳过");
-    }else if(!rs.length && !eligible){
-      toast("没有需要签到的 CN 账号","warn",detail||"Global 不参与签到");
-    }else{
-      toast("没有需要签到的账号","warn",detail);
-    }
-    // Mark CN check-in buttons done immediately when any success/already
-    if(ok||already){
-      document.querySelectorAll("#grid .card").forEach(c=>{
-        if((c.dataset.region||"cn")==="cn"){
-          const b=c.querySelector("button.sec,button.done");
-          if(b && /签到|处理中/.test(b.textContent||"")) markCheckinDone(b);
-        }
-      });
-    }
-    await load(false);
-  }catch(e){toast("批量签到失败","err",e.message)}
-  // load() re-renders grid; only restore toolbar button
-  busy(btn,false);
+    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:enabled,desensitize_terms:terms})});
+    await waitForDesensitizeSettings(d=>d.enabled===enabled&&d.source==="custom"&&sameDesensitizeTerms(d.terms,terms));
+    toast("屏蔽词设置已保存","ok");
+  }catch(e){toast("保存屏蔽词设置失败","err",e.message||String(e))}
+  finally{busy(btn,false)}
 }
-
-// 面板入口：嵌入 CPA 时从主面板获取 management key；独立打开时显示输入框。
-if(getKey()) load(false); else showAuth();
+async function restoreDesensitizeTerms(btn){
+  busy(btn,true);
+  try{
+    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize_terms:null})});
+    await waitForDesensitizeSettings(d=>d.source==="default");
+    toast("已恢复默认词表","ok");
+  }catch(e){toast("恢复默认词表失败","err",e.message||String(e))}
+  finally{busy(btn,false)}
+}
+async function restoreAllDesensitizeDefaults(btn){
+  busy(btn,true);
+  try{
+    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:false,desensitize_terms:null})});
+    await waitForDesensitizeSettings(d=>!d.enabled&&d.source==="default");
+    toast("已恢复全部默认设置","ok");
+  }catch(e){toast("恢复全部默认设置失败","err",e.message||String(e))}
+  finally{busy(btn,false)}
+}
+function openImportModal(){
+  const m=document.getElementById("importModal");
+  m.classList.add("show");
+  const ta=document.getElementById("importRaw");
+  if(ta) setTimeout(()=>ta.focus(),0);
+}
+function closeImportModal(){
+  document.getElementById("importModal").classList.remove("show");
+}
+function onImportMaskClick(e){
+  if(e.target===document.getElementById("importModal")) closeImportModal();
+}
+const MAX_IMPORT_FILE_BYTES=2*1024*1024;
+function safeImportName(name){
+  return String(name||"文件").replace(/[\u0000-\u001f\u007f]/g,"").trim().slice(0,120)||"文件";
+}
+async function importOneCredential(raw){
+  let payload={raw};
+  try{payload={json:JSON.parse(raw)}}catch(_){}
+  return api("/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+}
+async function importAuth(btn){
+  const imports=[];
+  const raw=(document.getElementById("importRaw").value||"").trim();
+  const files=document.getElementById("importFiles");
+  if(raw) imports.push({name:"粘贴内容",raw});
+  for(const file of Array.from(files.files||[])){
+    const name=safeImportName(file.name);
+    if(file.size>MAX_IMPORT_FILE_BYTES){imports.push({name,error:"超过 2 MiB"});continue}
+    try{imports.push({name,raw:await file.text()})}
+    catch(_){imports.push({name,error:"读取失败"})}
+  }
+  if(!imports.length){toast("请选择文件或粘贴凭证 JSON","warn");return}
+  busy(btn,true);
+  try{
+    const results=[];
+    for(const item of imports){
+      if(item.error){results.push({name:item.name,error:item.error});continue}
+      try{
+        const d=await importOneCredential(item.raw);
+        results.push({name:item.name,error:d.success?"":"导入失败"});
+      }catch(_){results.push({name:item.name,error:"请求失败"})}
+    }
+    document.getElementById("importRaw").value="";
+    files.value="";
+    const ok=results.filter(r=>!r.error).length;
+    const fail=results.length-ok;
+    const detail=results.map(r=>r.name+"："+(r.error||"成功")).join("；");
+    toast("导入完成",fail?"warn":"ok",ok+" 成功 / "+fail+" 失败 · "+detail);
+    if(fail===0) closeImportModal();
+    if(ok) await load(true)
+  }finally{busy(btn,false)}
+}
+document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
+document.addEventListener("keydown",e=>{
+  if(e.key=="Escape"&&document.getElementById("importModal").classList.contains("show")) closeImportModal();
+  if(e.key=="Escape"&&document.getElementById("desensitizeModal").classList.contains("show")) closeDesensitizeModal();
+  if(e.key=="Escape"&&document.getElementById("oauthModal").classList.contains("show")) closeOAuthModal();
+});
+let oauthState="";
+let oauthURL="";
+let oauthRegion="cn";
+let oauthDeadline=0;
+let oauthPollTimer=null;
+let oauthPollGeneration=0;
+const OAUTH_PENDING_STORE="workbuddy-oauth-pending-v1";
+const OAUTH_MAX_PENDING_MS=1800*1000; // Server loginTTL; post-token results use a shorter window.
+// The first entry is selected. Persist ONLY state/deadline/region, never URL/token.
+let oauthPending=[];
+let oauthStorageOK=true;
+const oauthLiveURLs=new Map();
+function oauthStatusText(text,kind){
+  const el=document.getElementById("oauthStatus");
+  el.textContent=text+(!oauthStorageOK?" 本标签存储不可用，刷新后无法恢复；请保留页面。":"");
+  el.className="oauth-status"+(kind?" "+kind:"");
+}
+function persistOAuthPending(){
+  try{
+    if(oauthPending.length)sessionStorage.setItem(OAUTH_PENDING_STORE,JSON.stringify(oauthPending.map(({state,deadline,region})=>({state,deadline,region}))));
+    else sessionStorage.removeItem(OAUTH_PENDING_STORE);
+    oauthStorageOK=true;
+  }catch(_){oauthStorageOK=false}
+}
+function pruneOAuthPending(){
+  oauthPending=oauthPending.filter(p=>p.deadline>Date.now());
+  for(const state of oauthLiveURLs.keys())if(!oauthPending.some(p=>p.state===state))oauthLiveURLs.delete(state);
+}
+function renderOAuthRecovery(){
+  const previousCount=oauthPending.length;
+  pruneOAuthPending();
+  if(previousCount!==oauthPending.length)persistOAuthPending();
+  const entry=document.getElementById("oauthResumeBtn");
+  entry.hidden=!oauthPending.length;entry.textContent="恢复登录查询（"+oauthPending.length+"）";
+  const list=document.getElementById("oauthPendingList");list.innerHTML="";
+  oauthPending.forEach((p,i)=>{
+    const b=document.createElement("button");b.type="button";b.className="sec";
+    b.textContent=(p.region==="global"?"Global":"CN")+" 登录 "+(i+1)+(p.state===oauthState?" · 当前":"")+" · 剩余 "+Math.max(0,Math.ceil((p.deadline-Date.now())/1000))+" 秒";
+    b.addEventListener("click",()=>resumeOAuthLogin(p.state));list.appendChild(b);
+  });
+}
+function restoreOAuthPending(){
+  try{
+    const saved=JSON.parse(sessionStorage.getItem(OAUTH_PENDING_STORE)||"[]"),seen=new Set();
+    oauthPending=Array.isArray(saved)?saved.filter(p=>{
+      if(!p||typeof p.state!=="string"||!p.state||p.state.length>4096||!Number.isFinite(p.deadline)||p.deadline<=Date.now()||p.deadline>Date.now()+OAUTH_MAX_PENDING_MS||!["cn","global"].includes(p.region)||seen.has(p.state))return false;
+      seen.add(p.state);return true;
+    }).map(p=>({state:p.state,deadline:p.deadline,region:p.region})):[];
+  }catch(_){oauthPending=[];oauthStorageOK=false}
+  if(oauthPending.length){const p=oauthPending[0];oauthState=p.state;oauthRegion=p.region;oauthDeadline=p.deadline}
+  persistOAuthPending();renderOAuthRecovery();
+}
+function rememberOAuthPending(state,deadline,region,selected=true){
+  pruneOAuthPending();const p={state,deadline,region};oauthPending=oauthPending.filter(x=>x.state!==state);
+  if(selected)oauthPending.unshift(p);else oauthPending.push(p);
+  persistOAuthPending();renderOAuthRecovery();
+}
+function removeOAuthPending(state){
+  oauthPending=oauthPending.filter(p=>p.state!==state);oauthLiveURLs.delete(state);persistOAuthPending();renderOAuthRecovery();
+}
+function stopOAuthPolling(){
+  oauthPollGeneration++;
+  if(oauthPollTimer!==null){clearTimeout(oauthPollTimer);oauthPollTimer=null}
+}
+function closeOAuthModal(){
+  stopOAuthPolling();document.getElementById("oauthModal").classList.remove("show");
+  pruneOAuthPending();persistOAuthPending();renderOAuthRecovery();
+}
+function onOAuthMaskClick(e){if(e.target===document.getElementById("oauthModal"))closeOAuthModal()}
+function decodeLoginPart(value){
+  const raw=String(value??"");
+  // The common host-escaped legacy URL needs only one ampersand decode.
+  if(/^(?:[^&]|&amp;)*$/.test(raw))return raw.replace(/&amp;/g,"&");
+  return raw.replace(/&(?:amp|quot|apos|lt|gt|#\d+|#x[\da-f]+);/gi,entity=>{
+    const names={"&amp;":"&","&quot;":'"',"&apos;":"'","&lt;":"<","&gt;":">"};
+    if(names[entity.toLowerCase()])return names[entity.toLowerCase()];
+    const hex=/^&#x/i.test(entity),n=parseInt(entity.slice(hex?3:2,-1),hex?16:10);
+    return n>0&&n<=0x10ffff?String.fromCodePoint(n):entity;
+  });
+}
+function buildLoginURL(d){
+  if(!d)return "";
+  try{
+    const u=new URL(decodeLoginPart(d.url_base&&d.query?d.url_base:String(d.url||"")));
+    if(!["https:","http:"].includes(u.protocol)||u.username||u.password)return "";
+    if(d.url_base&&d.query)Object.entries(d.query).forEach(([k,v])=>{
+      const key=decodeLoginPart(k);
+      if(Array.isArray(v))v.forEach(x=>u.searchParams.append(key,decodeLoginPart(x)));
+      else u.searchParams.set(key,decodeLoginPart(v));
+    });
+    return u.toString();
+  }catch(_){return ""}
+}
+function openOAuthURL(){if(oauthURL){try{window.open(oauthURL,"_blank","noopener,noreferrer")}catch(_){}}}
+async function copyOAuthURL(btn){
+  if(!oauthURL)return;busy(btn,true);
+  try{
+    if(navigator.clipboard&&navigator.clipboard.writeText)await navigator.clipboard.writeText(oauthURL);
+    else{const input=document.getElementById("oauthUrl");input.focus();input.select();if(!document.execCommand||!document.execCommand("copy"))throw new Error("copy unsupported")}
+    toast("登录链接已复制","ok");
+  }catch(_){toast("请手动复制登录链接","warn")}
+  finally{busy(btn,false)}
+}
+function oauthResponseDeadline(d,fallback){
+  let at=typeof d.expiresAt==="number"?d.expiresAt:Date.parse(d.expiresAt||"");
+  const max=Date.now()+OAUTH_MAX_PENDING_MS;
+  if(Number.isFinite(at)&&at>0){if(at<1e12)at*=1000;return Math.min(at,max)}
+  const seconds=Math.max(1,Math.min(1800,Number(d.expiresIn)||1800));
+  if(d.expiresIn==null&&Number.isFinite(fallback))return Math.min(fallback,max);
+  return Date.now()+seconds*1000;
+}
+function selectOAuthPending(p){
+  oauthState=p.state;oauthRegion=p.region;oauthDeadline=p.deadline;oauthURL=oauthLiveURLs.get(p.state)||"";
+  document.getElementById("oauthUrl").value=oauthURL;document.getElementById("oauthOpenBtn").disabled=!oauthURL;
+  document.getElementById("oauthModalTitle").textContent=p.region==="global"?"OAuth 登录 · 国际账号（workbuddy.ai）":"OAuth 登录 · CN 账号";
+  rememberOAuthPending(p.state,p.deadline,p.region);
+}
+function resumeOAuthLogin(state){
+  stopOAuthPolling();pruneOAuthPending();persistOAuthPending();renderOAuthRecovery();
+  const p=oauthPending.find(p=>p.state===state)||(!state&&oauthPending[0]);
+  document.getElementById("oauthModal").classList.add("show");
+  if(!p){oauthStatusText("登录会话已过期，请重新获取登录链接。","err");return}
+  selectOAuthPending(p);
+  oauthStatusText("已恢复登录查询。请保留本页；后台不会自主轮询。"+(!oauthURL?" 原登录链接未保存，请在之前打开的登录页完成授权。":""));
+  scheduleOAuthPoll(oauthPollGeneration);
+}
+function scheduleOAuthPoll(generation){oauthPollTimer=setTimeout(()=>pollOAuthLogin(generation),1500)}
+// Never expose upstream errors, proxy pages or permission response text.
+function oauthFailureText(_detail,retryable){return retryable?"登录尚未保存，稍后重试查询；会话已保留。":"登录失败，请重新获取登录链接。"}
+async function pollOAuthLogin(generation){
+  if(generation!==oauthPollGeneration)return;const state=oauthState;
+  if(Date.now()>=oauthDeadline){removeOAuthPending(state);oauthStatusText("登录会话已过期，请重新获取登录链接。","err");stopOAuthPolling();return}
+  try{
+    const d=await api("/oauth/poll",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({state})});
+    if(generation!==oauthPollGeneration)return;
+    oauthDeadline=oauthResponseDeadline(d,oauthDeadline);rememberOAuthPending(state,oauthDeadline,oauthRegion);
+    // retryable outranks done/success: save failures must retain their sessions.
+    if(d.retryable===true){oauthStatusText(oauthFailureText(d.error||d.message,true),"err");scheduleOAuthPoll(generation);return}
+    if(d.status==="pending"){oauthStatusText("等待浏览器完成登录… 请保留本页；关闭后需恢复查询。");scheduleOAuthPoll(generation);return}
+    if(d.status==="error"){oauthStatusText(oauthFailureText(d.error||d.message,false),"err");removeOAuthPending(state);stopOAuthPolling();return}
+    if(d.status&&d.status!=="success"){oauthStatusText("登录状态暂不可确认，会话已保留，请稍后查询。","err");scheduleOAuthPoll(generation);return}
+    if(d.success){
+      removeOAuthPending(state);oauthState="";oauthURL="";document.getElementById("oauthUrl").value="";
+      oauthStatusText("登录成功。账号已写入 CPA。","ok");closeOAuthModal();
+      toast("OAuth 登录成功","ok","WorkBuddy 账号已添加");await load(true);return;
+    }
+    if(d.done){oauthStatusText(oauthFailureText(d.error||d.message,false),"err");removeOAuthPending(state);stopOAuthPolling();return}
+    oauthStatusText("等待浏览器完成登录…（剩余 "+Math.max(0,Math.ceil((oauthDeadline-Date.now())/1000))+" 秒）");scheduleOAuthPoll(generation);
+  }catch(_){
+    if(generation!==oauthPollGeneration)return;
+    oauthStatusText("登录状态查询失败，请检查管理权限或网络；会话已保留，可恢复查询。","err");
+    if(getKey())scheduleOAuthPoll(generation);else stopOAuthPolling();
+  }
+}
+async function startOAuthLogin(btn,region){
+  region=region==="global"?"global":"cn";stopOAuthPolling();const generation=oauthPollGeneration;
+  oauthRegion=region;oauthState="";oauthURL="";oauthDeadline=0;
+  document.getElementById("oauthUrl").value="";document.getElementById("oauthOpenBtn").disabled=true;
+  document.getElementById("oauthModalTitle").textContent=region==="global"?"OAuth 登录 · 国际账号（workbuddy.ai）":"OAuth 登录 · CN 账号";
+  document.getElementById("oauthModal").classList.add("show");oauthStatusText("正在创建登录会话…");busy(btn,true);
+  try{
+    const d=await api("/oauth/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({region})});
+    const url=buildLoginURL(d);
+    if(!d.success||!url||typeof d.state!=="string"||!d.state)throw new Error("login unavailable");
+    const selected=generation===oauthPollGeneration;
+    const p={state:d.state,deadline:oauthResponseDeadline(d,Date.now()+1800000),region:d.region==="global"?"global":d.region==="cn"?"cn":region};
+    rememberOAuthPending(p.state,p.deadline,p.region,selected);oauthLiveURLs.set(p.state,url);
+    if(!selected)return; // Late start replies cannot replace a newer selection.
+    selectOAuthPending(p);oauthURL=buildLoginURL(d);
+    oauthStatusText("请在浏览器完成登录，本页会自动检测。请保留页面；后台不会自主轮询，刷新后可恢复查询。"+(d.persistent===false?" 服务重启后此会话可能失效。":""));
+    openOAuthURL();scheduleOAuthPoll(oauthPollGeneration);
+  }catch(_){if(generation===oauthPollGeneration)oauthStatusText("登录会话创建失败，请检查管理权限或网络后重试。","err")}
+  finally{busy(btn,false)}
+}
+function openOAuthLogin(btn,region){return startOAuthLogin(btn,region)}
+function restartOAuthLogin(btn){return startOAuthLogin(btn,oauthRegion||"cn")}
+/* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
+if(window.__wbThemeSync)window.__wbThemeSync();
+restoreOAuthPending();
+async function loadInitial(){
+  if(getKey()){
+    if(await load(false)) loadEgressIP();
+  }else{
+    showAuth();
+  }
+}
+loadInitial();
 </script>
+</body>
+</html>

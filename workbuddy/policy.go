@@ -1,8 +1,6 @@
-// policy.go is the pure decision layer for credit-driven lifecycle actions:
-// given an account's region and current credits, decide whether to disable
-// (CN), delete (Global), re-enable (CN after check-in restores credits), or
-// leave it alone. No I/O happens here — reconcileOneAccount consumes these
-// decisions and applies them via the lifecycle.go authfile helpers.
+// policy.go is the pure lifecycle decision layer. Credit balance alone never
+// disables or deletes credentials: free models can remain usable. Narrow chat
+// quota decisions live in chat_error.go and the process-local cooldown table.
 package main
 
 import (
@@ -77,8 +75,9 @@ var hardCreditMarkers = []string{
 	"not enough credit",
 }
 
-// isHardCreditError reports business "out of credits" style failures.
-// 402 is treated as payment/credit. Pure 429 is not hard unless body has credit markers.
+// isHardCreditError is a legacy broad diagnostic predicate. It is NOT evidence
+// of account scope: recording/guard/lifecycle triggers use classifyChatFailure.
+// Keep its historical 402 semantics for callers displaying billing diagnostics.
 func isHardCreditError(status int, body string) bool {
 	if status == httpStatusPaymentRequired {
 		return true
@@ -208,9 +207,8 @@ func authFileDisabledReason(raw []byte) string {
 //   - disabled_reason == session_dead → keep disabled; re-login is the fix;
 //   - disabled_reason == manual → keep disabled; the operator decided this, and
 //     only the panel's 启用 button undoes it;
-//   - no reason (pre-upgrade account) → fall back to the note text once, so an
-//     account disabled for exhaustion under the old code is still rescued,
-//     while one disabled for a dead session still is not.
+//   - no/unknown reason (pre-upgrade account) → keep disabled. Credit note
+//     text is informational, not proof that automation originally disabled it.
 func shouldReenableCN(disabled bool, cr *creditsSummary, reason, prevNote string) bool {
 	if !disabled {
 		return false
@@ -230,19 +228,10 @@ func shouldReenableCN(disabled bool, cr *creditsSummary, reason, prevNote string
 		// the balance cannot move while the account is disabled.
 		return true
 	}
-	// No recorded reason: an account disabled before disabled_reason existed.
-	// The note is the only remaining evidence, so consult it here and nowhere
-	// else — it is not durable enough to drive the decision afterwards.
-	if isSessionDeadNote(prevNote) {
-		return false
-	}
-	if cr == nil {
-		// Unknown balance and unknown reason: cannot tell a drained account from a
-		// broken one, and a wrong re-enable would put a credit-refused credential
-		// back into rotation.
-		return noteSaysExhausted(prevNote)
-	}
-	return true
+	// A manual disable on an exhausted account can have the same note as an
+	// automatic disable. Neither note text nor positive credits proves who
+	// disabled it. Unknown provenance requires an explicit operator enable.
+	return false
 }
 
 // creditExhaustedNoteMarker is the segment disableAuth appended when it disabled

@@ -12,10 +12,11 @@ import (
 
 // the failed field falls back to the previous value instead of being wiped.
 type accountCacheEntry struct {
-	checkin *checkinSummary
-	credits *creditsSummary
-	plan    string
-	fetched time.Time
+	checkin   *checkinSummary
+	checkinAt time.Time // start of the status read, separate from credit freshness
+	credits   *creditsSummary
+	plan      string
+	fetched   time.Time
 }
 
 var (
@@ -98,12 +99,15 @@ func cachedAccountDetailsWithCallback(authID string, sa *storedAuth, force bool,
 		errList = append(errList, msg)
 		errMu.Unlock()
 	}
+	var checkinAt time.Time
 	wg.Add(3)
 	go func() { defer wg.Done(); plan = fetchPaymentTypeWithCallback(sa, callbackID) }()
 	go func() {
 		defer wg.Done()
+		started := time.Now()
 		if c, err := fetchCheckinStatusWithCallback(sa, callbackID); err == nil {
 			ci = c
+			checkinAt = started
 		} else {
 			addErr("checkin: " + err.Error())
 		}
@@ -121,6 +125,7 @@ func cachedAccountDetailsWithCallback(authID string, sa *storedAuth, force bool,
 	if prev != nil {
 		if ci == nil {
 			ci = prev.checkin
+			checkinAt = prev.checkinAt
 		}
 		if cr == nil {
 			cr = prev.credits
@@ -134,10 +139,29 @@ func cachedAccountDetailsWithCallback(authID string, sa *storedAuth, force bool,
 		// Stamp snapshot time for panel/API consumers (A-09 observability).
 		cr.FetchedAt = now.UTC().Format(time.RFC3339)
 	}
-	accountCache.Store(authID, &accountCacheEntry{checkin: ci, credits: cr, plan: plan, fetched: now})
+	ci = storeAccountSnapshot(authID, &accountCacheEntry{checkin: ci, checkinAt: checkinAt, credits: cr, plan: plan, fetched: now}).checkin
 	// Soft cap: if map is huge, drop oldest-looking entries beyond bound.
 	pruneAccountCacheSoftCap(accountCacheSoftCap)
 	return plan, ci, cr, errList
+}
+
+// Keep a confirmed status written by a newer check-in while an older dashboard
+// flight was in progress. This never upgrades false to true without evidence.
+func storeAccountSnapshot(authID string, snapshot *accountCacheEntry) *accountCacheEntry {
+	for {
+		prev, exists := accountCache.Load(authID)
+		next := *snapshot
+		if exists {
+			if cached, ok := prev.(*accountCacheEntry); ok && cached.checkinAt.After(next.checkinAt) {
+				next.checkin, next.checkinAt = cached.checkin, cached.checkinAt
+			}
+			if accountCache.CompareAndSwap(authID, prev, &next) {
+				return &next
+			}
+		} else if _, loaded := accountCache.LoadOrStore(authID, &next); !loaded {
+			return &next
+		}
+	}
 }
 
 // accountCacheSoftCap limits concurrent cache entries (auth churn / index thrash).

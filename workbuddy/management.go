@@ -179,6 +179,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/refresh", Description: "Force refresh quota/cache for all accounts."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Manually check in one account (auth_index) or all."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
+			{Method: http.MethodGet, Path: base + "/checkin/status", Description: "Recent confirmed check-in outcomes, bounded retries and next verification time; optional auth_index filter."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import WorkBuddy credential JSON (nested or flat) into host auth store."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
@@ -262,6 +263,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleManualCheckinWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodPost && path == base+"/checkin/config":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinConfig(req.ManagementRequest)))
+	case req.Method == http.MethodGet && path == base+"/checkin/status":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinStatus(strings.TrimSpace(req.Query.Get("auth_index")))))
 	case req.Method == http.MethodGet && path == base+"/credits":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQueryWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodPost && path == base+"/import":

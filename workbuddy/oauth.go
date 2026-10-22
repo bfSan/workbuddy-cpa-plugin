@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"time"
@@ -34,7 +33,7 @@ func newLoginClient() (*http.Client, error) {
 	if state.mode == proxyModeExplicit {
 		transport = state.client.Transport
 	}
-	jar, err := cookiejar.New(nil)
+	jar, err := newOAuthCookieJar()
 	if err != nil {
 		return nil, err
 	}
@@ -58,6 +57,8 @@ func loginClientForCurrentRouting(lc *loginCtx) (*http.Client, error) {
 	client.CheckRedirect = rejectHTTPRedirect
 	if routing.mode == proxyModeExplicit {
 		client.Transport = routing.client.Transport
+	} else if lc.routingManaged {
+		client.Transport = sharedHTTPClient().Transport
 	}
 	return &client, nil
 }
@@ -83,7 +84,10 @@ func doJSONRequest(client *http.Client, req *http.Request) (json.RawMessage, int
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if err != nil || len(raw) > 1<<20 {
+		return nil, resp.StatusCode, fmt.Errorf("upstream response unavailable or too large")
+	}
 	if resp.StatusCode >= 400 {
 		return nil, resp.StatusCode, fmt.Errorf("http_error: upstream %d", resp.StatusCode)
 	}
@@ -238,7 +242,7 @@ func buildAuthStateRequest(profile oauthRequestProfile) (*http.Request, error) {
 }
 
 func buildAuthTokenRequest(profile oauthRequestProfile, state string) (*http.Request, error) {
-	req, err := http.NewRequest(http.MethodGet, endpointAuthTokenFor(profile)+state, nil)
+	req, err := http.NewRequest(http.MethodGet, endpointAuthTokenFor(profile)+url.QueryEscape(state), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +251,7 @@ func buildAuthTokenRequest(profile oauthRequestProfile, state string) (*http.Req
 }
 
 func buildLoginAccountRequest(profile oauthRequestProfile, state, accessToken string) (*http.Request, error) {
-	req, err := http.NewRequest(http.MethodGet, endpointLoginAcctFor(profile)+state, nil)
+	req, err := http.NewRequest(http.MethodGet, endpointLoginAcctFor(profile)+url.QueryEscape(state), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -332,6 +336,9 @@ func decorateDesktopAuthURL(rawURL, clientVersion string) (string, error) {
 }
 
 func handleStartLogin(raw []byte) ([]byte, error) {
+	if err := configureOAuthPending(raw); err != nil {
+		return nil, err
+	}
 	mode := oauthClientModeCLI
 	if features := currentFeatureRuntime(); features != nil {
 		mode = features.oauthClientMode
@@ -351,6 +358,9 @@ func startLoginWithMode(mode string) ([]byte, error) {
 // leg later talks to the same realm — a CN profile minting through a global
 // endpoint (or the reverse) fails at exchange time, not at start time.
 func startLoginWithModeRegion(mode, region string) ([]byte, error) {
+	if err := oauthPendingStorageReady(); err != nil {
+		return nil, err
+	}
 	client, err := newLoginClient()
 	if err != nil {
 		return nil, fmt.Errorf("auth state failed: %w", err)
@@ -362,124 +372,46 @@ func startLoginWithModeRegion(mode, region string) ([]byte, error) {
 	}
 	data, _, err := doJSONRequest(client, stateReq)
 	if err != nil {
-		return nil, fmt.Errorf("auth state failed: %w", err)
+		return nil, fmt.Errorf("auth state failed; upstream unavailable")
 	}
 	var st authStateData
 	_ = json.Unmarshal(data, &st)
-	if st.State == "" || st.AuthURL == "" {
+	if !validOAuthState(st.State) || st.AuthURL == "" {
 		return nil, fmt.Errorf("auth state: missing state or authUrl — please restart the login flow")
 	}
 	if profile.mode == oauthClientModeWorkBuddy {
 		st.AuthURL, err = decorateDesktopAuthURL(st.AuthURL, profile.clientVersion)
 		if err != nil {
-			return nil, fmt.Errorf("auth state: invalid authUrl: %w", err)
+			return nil, fmt.Errorf("auth state: invalid login URL")
 		}
 	}
-	loginStates.Store(st.State, &loginCtx{
-		client:  client,
-		expires: time.Now().Add(loginTTL),
-		profile: profile,
-	})
+	now := time.Now()
+	lc := &loginCtx{client: client, created: now, expires: now.Add(loginTTL), profile: profile, routingManaged: true}
+	if err := registerOAuthPending(st.State, lc); err != nil {
+		return nil, err
+	}
 	return okEnvelope(pluginapi.AuthLoginStartResponse{
 		Provider:  providerName,
 		URL:       st.AuthURL,
 		State:     st.State,
-		ExpiresAt: time.Now().Add(loginTTL).UTC(),
-		Metadata:  map[string]any{"logo": pluginLogoURL},
+		ExpiresAt: lc.expires.UTC(),
+		Metadata:  map[string]any{"logo": pluginLogoURL, "persistent": lc.store != nil, "result_ttl_seconds": int(oauthResultTTL.Seconds()), "background_polling": false},
 	})
 }
 
 func handlePollLogin(raw []byte) ([]byte, error) {
-	var req pluginapi.AuthLoginPollRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
+	if err := configureOAuthPending(raw); err != nil {
 		return nil, err
 	}
-	state := strings.TrimSpace(req.State)
-	if state == "" {
-		return nil, fmt.Errorf("poll: empty state")
+	var req pluginapi.AuthLoginPollRequest
+	if json.Unmarshal(raw, &req) != nil {
+		return nil, fmt.Errorf("poll: invalid request")
 	}
-	v, ok := loginStates.Load(state)
-	if !ok {
-		return nil, fmt.Errorf("poll: unknown state (restart login) — the login session was lost; please re-initiate login")
-	}
-	lc := v.(*loginCtx)
-	if time.Now().After(lc.expires) {
-		loginStates.Delete(state)
-		return nil, fmt.Errorf("poll: login expired (5 min timeout) — please re-initiate login and complete within 5 minutes")
-	}
-	profile := lc.profile
-	if profile.mode == "" {
-		profile = oauthProfileForMode(oauthClientModeCLI)
-	}
-	pollClient, err := loginClientForCurrentRouting(lc)
+	response, _, _, err := pollOAuthPending(strings.TrimSpace(req.State), false)
 	if err != nil {
-		loginStates.Delete(state)
-		return nil, fmt.Errorf("poll: %w", err)
+		return nil, err
 	}
-
-	// Single-shot poll per RPC: the host drives the polling cadence.
-	// auth/token is the authoritative login-status endpoint: the application
-	// layer returns a non-zero code ("login ing") while pending, and code 0
-	// with the token bundle once complete. login/account sits behind the
-	// openresty gateway and is rejected (401) until login finishes, so probe
-	// token first and only fetch account once we hold a bearer.
-	tokenReq, err := buildAuthTokenRequest(profile, state)
-	if err != nil {
-		loginStates.Delete(state)
-		return nil, fmt.Errorf("poll: token request: %w", err)
-	}
-	tokRaw, status, errTok := doJSONRequest(pollClient, tokenReq)
-	if errTok != nil {
-		// Transport-level failures and 5xx are real errors, not "still waiting":
-		// surface them so the user sees a failure instead of polling until TTL.
-		if status == 0 || status >= 500 {
-			loginStates.Delete(state)
-			return nil, fmt.Errorf("poll: token endpoint error: %w — upstream may be temporarily unavailable; retry in a few minutes", errTok)
-		}
-		// 4xx / business-code responses mean the login is still pending.
-		return okEnvelope(pluginapi.AuthLoginPollResponse{
-			Status:  pluginapi.AuthLoginStatusPending,
-			Message: "waiting for login",
-		})
-	}
-	var tok tokenData
-	if err := json.Unmarshal(tokRaw, &tok); err != nil || tok.AccessToken == "" {
-		return okEnvelope(pluginapi.AuthLoginPollResponse{
-			Status:  pluginapi.AuthLoginStatusPending,
-			Message: "waiting for login",
-		})
-	}
-	pollClient, err = loginClientForCurrentRouting(lc)
-	if err != nil {
-		loginStates.Delete(state)
-		return nil, fmt.Errorf("poll: %w", err)
-	}
-
-	var acct accountData
-	accountReq, err := buildLoginAccountRequest(profile, state, tok.AccessToken)
-	if err != nil {
-		loginStates.Delete(state)
-		return nil, fmt.Errorf("poll: account request: %w", err)
-	}
-	acctRaw, _, errAcct := doJSONRequest(pollClient, accountReq)
-	if errAcct != nil {
-		loginStates.Delete(state)
-		return nil, fmt.Errorf("poll: account lookup failed after token success: %w", errAcct)
-	}
-	if err := json.Unmarshal(acctRaw, &acct); err != nil {
-		loginStates.Delete(state)
-		return nil, fmt.Errorf("poll: account lookup parse failed: %w", err)
-	}
-	sa, err := buildLoginStoredAuth(tok, acct)
-	if err != nil {
-		loginStates.Delete(state)
-		return nil, fmt.Errorf("poll: %w", err)
-	}
-	loginStates.Delete(state)
-	return okEnvelope(pluginapi.AuthLoginPollResponse{
-		Status: pluginapi.AuthLoginStatusSuccess,
-		Auth:   toAuthDataForLoginPoll(sa),
-	})
+	return okEnvelope(response)
 }
 
 func toAuthDataForLoginPoll(sa *storedAuth) pluginapi.AuthData {

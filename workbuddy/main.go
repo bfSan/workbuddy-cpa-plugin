@@ -134,9 +134,17 @@ const (
 // CodeBuddy associates the browser login with the state issued at auth/state,
 // so we must reuse the same cookie jar across the state request and the polls.
 type loginCtx struct {
-	client  *http.Client
-	expires time.Time
-	profile oauthRequestProfile
+	mu             sync.Mutex // serializes upstream consumption and panel persistence
+	client         *http.Client
+	expires        time.Time
+	profile        oauthRequestProfile
+	created        time.Time
+	token          *tokenData
+	tokenAt        time.Time
+	result         *storedAuth
+	saved          bool // host.auth.save acknowledged (panel path only)
+	store          *oauthPendingStore
+	routingManaged bool // constructed by start/recovery, not a legacy injected client
 }
 
 var (
@@ -155,13 +163,7 @@ func init() {
 		ticker := time.NewTicker(loginStatesPruneInterval)
 		defer ticker.Stop()
 		for range ticker.C {
-			now := time.Now()
-			loginStates.Range(func(key, value any) bool {
-				if lc, ok := value.(*loginCtx); ok && now.After(lc.expires) {
-					loginStates.Delete(key)
-				}
-				return true
-			})
+			pruneOAuthPending(time.Now())
 		}
 	}()
 }
@@ -274,8 +276,12 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		}
 		return okEnvelope(wbRegistration())
 	case pluginabi.MethodModelStatic:
+		// These host requests carry AuthDir even when lifecycle.configure does
+		// not. Storage failures disable recoverable login, never model serving.
+		_ = configureOAuthPending(request)
 		return handleModelStatic(request)
 	case pluginabi.MethodModelForAuth:
+		_ = configureOAuthPending(request)
 		return handleModelForAuth(request)
 	case pluginabi.MethodAuthIdentifier:
 		return okEnvelope(identifierResponse{Identifier: providerName})
@@ -363,7 +369,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.22"
+var version = "0.9.23"
 
 func wbRegistration() registration {
 	return registration{
@@ -747,6 +753,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	// Resolve oauth-model-alias ("client-alias" -> "upstream-model") before
 	// forwarding; the upstream rejects unknown alias IDs.
 	upstreamModel := resolveUpstreamModel(req.Model, req.AuthAttributes)
+	if blocked := guardExecutorQuota(req.AuthID, upstreamModel); blocked != nil {
+		return blocked, nil
+	}
 	started := time.Now()
 	authUID := ""
 	if sa.Account.UID != "" {
@@ -764,7 +773,10 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	backendHeaders(httpReq, sa)
 	// Compliance: route via host.http.do_stream so request-log captures the
 	// outbound call. Read entire body via the bridge, then fold SSE → completion.
-	stream, statusCode, _, err := hostHTTPDoStreamWithCallback(httpReq, req.HostCallbackID)
+	if blocked := guardExecutorQuota(req.AuthID, upstreamModel); blocked != nil {
+		return blocked, nil
+	}
+	stream, statusCode, responseHeaders, err := hostHTTPDoStreamWithCallback(httpReq, req.HostCallbackID)
 	if err != nil {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		return nil, fmt.Errorf("http_error: %w", err)
@@ -775,10 +787,10 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		payload, _ := io.ReadAll(reader)
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(payload))
 		reconcileAfterExecutorError(req.AuthID, statusCode, string(payload))
-		recordUpstreamFailure(req.AuthID, upstreamModel, statusCode, string(payload))
-		return errorEnvelopeWithStatus("http_error", fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200)), statusCode), nil
+		recordUpstreamFailureWithHeaders(req.AuthID, upstreamModel, statusCode, string(payload), responseHeaders)
+		return errorEnvelopeFor(chatUpstreamError(statusCode, string(payload))), nil
 	}
-	completion, err := aggregateCompletion(reader, req.Model)
+	completion, err := aggregateCompletionWithQuota(reader, req.Model, req.AuthID, upstreamModel, responseHeaders)
 	if err != nil {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		return nil, err
@@ -809,6 +821,9 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	upstreamModel := resolveUpstreamModel(req.Model, req.AuthAttributes)
+	if blocked := guardExecutorQuota(req.AuthID, upstreamModel); blocked != nil {
+		return blocked, nil
+	}
 	started := time.Now()
 	authUID := ""
 	if sa.Account.UID != "" {
@@ -832,7 +847,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error())
 			var statusErr *upstreamStatusError
 			if errors.As(errCollect, &statusErr) {
-				return errorEnvelopeWithStatus("http_error", redactSecrets(statusErr.Error()), statusErr.status), nil
+				return errorEnvelopeFor(errCollect), nil
 			}
 			return nil, errCollect
 		}
@@ -890,11 +905,16 @@ func errorEnvelopeWithStatus(code, message string, status int) []byte {
 // default. Several handlers already build the envelope themselves with
 // errorEnvelopeWithStatus; this covers the ones that return a bare error.
 func errorEnvelopeFor(err error) []byte {
+	code := "plugin_error"
+	var classified interface{ ErrorCode() string }
+	if errors.As(err, &classified) && classified.ErrorCode() != "" {
+		code = classified.ErrorCode()
+	}
 	var sc interface{ StatusCode() int }
 	if errors.As(err, &sc) && sc.StatusCode() > 0 {
-		return errorEnvelopeWithStatus("plugin_error", redactSecrets(err.Error()), sc.StatusCode())
+		return errorEnvelopeWithStatus(code, redactSecrets(err.Error()), sc.StatusCode())
 	}
-	return errorEnvelope("plugin_error", err.Error())
+	return errorEnvelope(code, redactSecrets(err.Error()))
 }
 
 func writeResponse(response *C.cliproxy_buffer, raw []byte) {

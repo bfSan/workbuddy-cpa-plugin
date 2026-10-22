@@ -148,18 +148,17 @@ func TestShouldReenableCN(t *testing.T) {
 		t.Fatal("a session-dead account must stay disabled even without credits")
 	}
 
-	// ★ No recorded reason: pre-upgrade accounts, where the note is the only
-	// evidence left. Consulted here and nowhere else, since syncAuthNote rewrites
-	// the note on every reconcile.
-	if !shouldReenableCN(true, drained, "", "CN · 已禁用 · 耗尽 · 余0 已用5") {
-		t.Fatal("an account parked by the old exhaustion rule must still be rescued via its note")
+	// Unknown provenance stays disabled: a manually parked exhausted account
+	// can carry the same informational note as a historical automatic disable.
+	if shouldReenableCN(true, drained, "", "CN · 已禁用 · 耗尽 · 余0 已用5") {
+		t.Fatal("credit note alone must not revive a potentially manual legacy disable")
 	}
 	if shouldReenableCN(true, able, "", deadNote) {
 		t.Fatal("an account parked for a dead session must stay disabled even without the field")
 	}
-	// No reason, no marker, balance readable: nothing says it must stay parked.
-	if !shouldReenableCN(true, able, "", "") {
-		t.Fatal("disabled + readable balance + no reason should reenable")
+	// No reason can be a legacy manual disable. Balance does not authorize recovery.
+	if shouldReenableCN(true, able, "", "") {
+		t.Fatal("disabled + readable balance + unknown provenance must stay disabled")
 	}
 }
 

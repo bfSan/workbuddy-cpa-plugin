@@ -1,6 +1,35 @@
 # Changelog
 
-## Unreleased
+## 0.9.23 — 2026-10-22
+
+- Persist bounded OAuth tasks and intermediate token/account results on Unix,
+  restore unexpired tasks after restart, and report success only after the
+  panel credential save is acknowledged. The browser can resume same-tab
+  pending sessions; it never stores access/refresh tokens. There is no
+  autonomous background OAuth polling. Non-Unix platforms explicitly use
+  memory-only pending state.
+- Add evidence-scoped quota holds with reason, scope, first occurrence,
+  next-probe time and recovery condition. Preserve manual disables and
+  staged/CPA routing ownership; never delete accounts for zero balance.
+  Enforce holds across buffered, synchronous streaming, asynchronous streaming
+  and exact chat HTTP request paths without blocking billing/catalog repair.
+- Require authoritative check-in confirmation. A POST acknowledgement alone
+  no longer creates a successful check-in or a checked-in cache placeholder.
+  Add at most three same-day background retries (1/2/5 minutes), bounded
+  process-local run history, and a panel history view. Ambiguous POST results
+  use verification-only retries; permanent credential/configuration errors
+  do not retry. Holds and check-in retry records reset on process restart.
+- Restore missing OAuth/import/configuration panel actions; keep batch
+  check-in updates scoped to confirmed accounts. Prevent late dashboard
+  snapshots from overwriting newer check-in confirmation or refreshing the
+  apparent age of old credit data.
+- Preserve the existing model-promotion/tier metadata throughout discovery,
+  cache and per-realm panel aggregation. Fix missing initial fact provenance
+  so duplicate model metadata resolves deterministically.
+
+See [reliability details and limits](docs/reliability.md).
+
+## Earlier unreleased changes (historical)
 
 ### Routing ownership
 

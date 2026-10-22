@@ -197,6 +197,7 @@ func handleCreditsQueryWithCallback(req pluginapi.ManagementRequest, callbackID 
 			if err != nil {
 				acct["error"] = err.Error()
 			} else {
+				observeQuotaCredits(f.ID, cr)
 				acct["credits"] = cr
 				acct["exhausted"] = isCreditsExhausted(cr)
 				if isGlobalDomain(sa.Auth.Domain) {
@@ -223,7 +224,7 @@ func handleCreditsQueryWithCallback(req pluginapi.ManagementRequest, callbackID 
 					ci = prev.checkin
 				}
 				plan, _ := acct["plan"].(string)
-				accountCache.Store(f.ID, &accountCacheEntry{
+				storeAccountSnapshot(f.ID, &accountCacheEntry{
 					checkin: ci, credits: cr, plan: plan, fetched: now,
 				})
 			}
@@ -261,6 +262,7 @@ func handleCreditsQueryWithCallback(req pluginapi.ManagementRequest, callbackID 
 		if err != nil {
 			ac.Error = err.Error()
 		} else {
+			observeQuotaCredits(f.ID, cr)
 			ac.Credits = cr
 		}
 		out = append(out, ac)

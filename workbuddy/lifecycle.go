@@ -1,9 +1,6 @@
-// lifecycle.go implements credit-based auth lifecycle for workbuddy:
-//   - CN exhausted  → disable auth file (disabled:true), re-enable after check-in when credits return
-//   - Global exhausted → delete auth file (one-shot quota)
-//   - Unknown credits → no-op (never mis-kill)
-//   - Hard credit errors from executor → recheck credits then apply policy
-//   - Soft rate limits → do not delete Global
+// lifecycle.go maintains account notes and credential disable provenance.
+// Quota exhaustion never deletes or disables credentials; temporary freezes are
+// process-local and separately clearable. Manual disable is authoritative.
 package main
 
 import (
@@ -18,9 +15,10 @@ import (
 )
 
 var (
-	lifecycleState             sync.Map // auth_id (auth.ID) -> lifecycleStateEntry
-	lifecycleSaveTTL           = 30 * time.Second
-	reconcileHostAuthGetBundle = hostAuthGetBundle
+	lifecycleState               sync.Map // auth_id (auth.ID) -> lifecycleStateEntry
+	lifecycleSaveTTL             = 30 * time.Second
+	reconcileHostAuthGetBundle   = hostAuthGetBundle
+	lifecycleHostAuthGetPhysical = hostAuthGetPhysical
 )
 
 type lifecycleStateEntry struct {
@@ -92,8 +90,20 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 		return nil
 	}
 	// Prefer live physical file to preserve any extra fields if present.
-	phys, err := hostAuthGetPhysical(authIndex)
-	if err == nil && parseDisabledFromAuthJSON(phys.JSON) {
+	phys, err := lifecycleHostAuthGetPhysical(authIndex)
+	if err != nil {
+		return err
+	}
+	if phys == nil {
+		return fmt.Errorf("cannot verify live credential disable state")
+	}
+	if parseDisabledFromAuthJSON(phys.JSON) {
+		// Never overwrite manual/unknown disable provenance with an automatic
+		// reason: a future reconcile could otherwise undo the operator's choice.
+		existingReason := authFileDisabledReason(phys.JSON)
+		if existingReason != reasonCode || existingReason == disableReasonManual || existingReason == "" {
+			return nil
+		}
 		// already disabled; still refresh note if needed
 		if lifecycleStateUnchanged(authID, true, note) {
 			return nil
@@ -138,7 +148,18 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 	if lifecycleStateUnchanged(authID, false, note) {
 		return nil
 	}
-	phys, err := hostAuthGetPhysical(authIndex)
+	phys, err := lifecycleHostAuthGetPhysical(authIndex)
+	if err != nil {
+		return err
+	}
+	if phys == nil {
+		return fmt.Errorf("cannot verify live credential disable state")
+	}
+	// Revalidate under the account lock. The caller's snapshot may predate an
+	// operator disabling the account while a billing request was in flight.
+	if !shouldReenableCN(parseDisabledFromAuthJSON(phys.JSON), cr, authFileDisabledReason(phys.JSON), rawNoteFromJSON(phys.JSON)) {
+		return nil
+	}
 	name := authFileNameFor(sa)
 	path := ""
 	legacyPath := ""
@@ -245,7 +266,8 @@ func peerAuthDir() string {
 	return ""
 }
 
-// applyExhaustedPolicy applies disable (CN) or delete (Global).
+// applyExhaustedPolicy retains the legacy action API; current balance policy is
+// deliberately a no-op, so quota cannot delete or disable credentials.
 func applyExhaustedPolicy(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string) error {
 	if !lifecycleEnabled() {
 		return nil
@@ -268,7 +290,7 @@ func applyExhaustedPolicy(authIndex, authID string, sa *storedAuth, cr *creditsS
 // failed credits query keeps the last known value instead of regressing the
 // card to "积分未知".
 func existingNoteCredits(authIndex string) string {
-	phys, err := hostAuthGetPhysical(authIndex)
+	phys, err := lifecycleHostAuthGetPhysical(authIndex)
 	if err != nil || phys == nil {
 		return ""
 	}
@@ -289,7 +311,13 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
 	defer mu.Unlock()
-	phys, err := hostAuthGetPhysical(authIndex)
+	phys, err := lifecycleHostAuthGetPhysical(authIndex)
+	if err != nil {
+		return err
+	}
+	if phys == nil {
+		return fmt.Errorf("cannot verify live credential disable state")
+	}
 	name := authFileNameFor(sa)
 	path := ""
 	legacyPath := ""
@@ -373,6 +401,7 @@ func reconcileOneAccountWithCallback(authIndex, authID string, force bool, callb
 			return lifecycleNone, nil
 		}
 		cr = cr2
+		observeQuotaCredits(authID, cr)
 		if cr == nil {
 			return lifecycleNone, nil
 		}
@@ -455,10 +484,8 @@ func reconcileAfterExecutorError(authID string, status int, body string) {
 	if !lifecycleEnabled() || strings.TrimSpace(authID) == "" {
 		return
 	}
-	if isSoftRateLimit(status, body) && !isHardCreditError(status, body) {
-		return
-	}
-	if !isHardCreditError(status, body) {
+	// A pair-specific allowance must never trigger account-level lifecycle work.
+	if classifyChatFailure(status, body).Reason != cooldownReasonSharedCredits {
 		return
 	}
 	go func() {
@@ -523,7 +550,7 @@ func reconcileByUID(uid string, status int, body string) {
 	if uid == "" || !lifecycleEnabled() {
 		return
 	}
-	if !isHardCreditError(status, body) {
+	if classifyChatFailure(status, body).Reason != cooldownReasonSharedCredits {
 		return
 	}
 	idx, id := resolveAuthIndexAndID(uid)

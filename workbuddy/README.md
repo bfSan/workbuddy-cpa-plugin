@@ -3,15 +3,16 @@
 A [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) plugin that
 provides **Tencent CodeBuddy** (`copilot.tencent.com` CN and `workbuddy.ai`
 Global) as a native OAuth provider: per-account dynamic model discovery,
-streaming execution, credit-aware scheduling, daily check-in automation, and a
-built-in management dashboard.
+streaming execution, quota-state management, daily check-in automation, and a
+built-in management dashboard. Account selection belongs to CPA/staged, not this plugin.
 
 [中文文档 → README_CN.md](README_CN.md)
 
 ## Features
 
 - **OAuth login** — multi-account `workbuddy-<uid>.json` auth files via the
-  host's auth store. CN and Global realms share one plugin, one config block.
+  host's auth store. CN and Global share one plugin. Bounded pending-login
+  persistence supports restart recovery; see the reliability guide for platform limits.
 - **Model catalog**: by default the plugin discovers and caches each
   authenticated account's model entitlements. An optional authoritative YAML
   list can replace WorkBuddy discovery. Both modes enrich missing metadata from
@@ -21,10 +22,9 @@ built-in management dashboard.
   via `host.stream.emit`) and non-streaming (SSE folded into a single
   completion). `tool_choice` normalization, Claude Code template sanitization,
   and per-realm system-message injection are built in.
-- **Credit lifecycle** — CN accounts auto-`disabled` when credits run out and
-  re-enabled when a check-in restores them. Global accounts are deleted on
-  exhaustion (one-shot trial quota). Hard credit errors from the executor
-  trigger an immediate reconcile.
+- **Quota holds** — evidence-scoped temporary rate limits, model allowances and
+  confirmed shared-credit exhaustion, with reason, next-probe time and recovery
+  condition. No credential deletion for zero balance; manual disables are preserved.
 - **Per-model cooldown** — a 429 on one model cools only that `(auth, model)`
   pair, so the account keeps serving every other model. Visible and clearable
   from the panel and the management API.
@@ -34,18 +34,21 @@ built-in management dashboard.
   has no cost field).
 - **Daily check-in** — CN accounts are checked in at 09:00 and 21:00 local
   time (configurable). Manual "check in all" from the panel. Per-account
-  mutex prevents duplicate claims from racing browser tabs.
+  mutex prevents concurrent claims. Success requires a status confirmation;
+  ambiguous POSTs are verified rather than blindly replayed. Transient failures
+  have at most three same-day background retries and observable run history.
 - **Prompt obscuring** — optional, off by default. Inserts U+200B into a
   configurable term list wherever those terms appear in prompt and tool
   metadata. See "Prompt obscuring" below.
-- **Trial claim** — Global accounts can claim the one-time 250-credit expert
-  trial pack from the panel.
 - **Dashboard** — embedded panel at `/v0/resource/plugins/workbuddy/panel`
   with credits progress bars, plan badges, exhausted/disabled flags, region
   filter, and credential import.
 - **Usage forwarding** — implements `UsagePlugin`; every request's usage
   record is forwarded to a configurable CPAMP endpoint. No record is sent
   unless a URL+key are configured.
+
+See [reliability behavior and limitations](docs/reliability.md) for persistence,
+manual-disable precedence, retry boundaries and diagnostic APIs.
 
 ## Quickstart
 

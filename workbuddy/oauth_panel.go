@@ -14,6 +14,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/url"
 	"strings"
 	"time"
@@ -84,7 +85,10 @@ func handleOAuthStart(req pluginapi.ManagementRequest) map[string]any {
 		"expiresIn": int(time.Until(env.Result.ExpiresAt).Round(time.Second) / time.Second),
 		// Echoed so the panel can show which realm the opened page belongs to and
 		// so a silent fallback to CN is visible instead of assumed.
-		"region": region,
+		"region":             region,
+		"persistent":         env.Result.Metadata["persistent"],
+		"result_ttl_seconds": env.Result.Metadata["result_ttl_seconds"],
+		"background_polling": false,
 	}
 }
 
@@ -127,67 +131,27 @@ func handleOAuthPoll(req pluginapi.ManagementRequest) map[string]any {
 	if state == "" {
 		return map[string]any{"success": false, "error": "state is required"}
 	}
-	payload, err := json.Marshal(pluginapi.AuthLoginPollRequest{Provider: providerName, State: state})
+	response, persistent, expires, err := pollOAuthPending(state, true)
 	if err != nil {
-		return map[string]any{"success": false, "error": "encode poll request"}
+		result := map[string]any{"success": false, "status": "error", "done": true,
+			"retryable":  (!expires.IsZero() && time.Now().Before(expires)) || errors.Is(err, errOAuthStorage),
+			"persistent": persistent, "background_polling": false, "error": err.Error()}
+		if !expires.IsZero() {
+			result["expiresAt"] = expires.UTC().Format(time.RFC3339)
+		}
+		return result
 	}
-	raw, err := handlePollLogin(payload)
-	if err != nil {
-		return map[string]any{"success": false, "error": err.Error()}
-	}
-	var env struct {
-		OK     bool                            `json:"ok"`
-		Result pluginapi.AuthLoginPollResponse `json:"result"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
-		return map[string]any{"success": false, "error": "login poll failed"}
-	}
-	status := string(env.Result.Status)
-	success := status == string(pluginapi.AuthLoginStatusSuccess)
+	success := response.Status == pluginapi.AuthLoginStatusSuccess
 	nickname := ""
-	// ★ On the panel path, persisting the credential is OUR job.
-	//
-	// handlePollLogin only RETURNS the credential. That is correct when the host
-	// drives auth.login.poll, because the host takes the returned AuthData and
-	// writes the auth file itself. The panel never goes through that RPC: it calls
-	// handlePollLogin directly, and the old code read the nickname out of the
-	// payload and dropped the rest — so a browser sign-in that genuinely succeeded
-	// showed "登录成功，账号已写入 CPA" while no file was ever written and the
-	// account appeared nowhere.
-	//
-	// The save therefore belongs here and not inside handlePollLogin: doing it
-	// there would double-write against the host's own WriteFile on the RPC path.
-	//
-	// A failed save must not be reported as success. The login really did happen
-	// upstream, so the message says so explicitly rather than the generic poll
-	// error, and keeps done=true so the panel stops polling instead of hanging on
-	// a login that cannot be retried by polling again.
 	if success {
-		if len(env.Result.Auth.StorageJSON) == 0 {
-			return map[string]any{"success": false, "status": status, "done": true,
-				"error": "login succeeded but upstream returned no credential to save"}
-		}
-		sa, errParse := parseStored(env.Result.Auth.StorageJSON)
-		if errParse != nil {
-			return map[string]any{"success": false, "status": status, "done": true,
-				"error": "login succeeded but the credential could not be read: " + errParse.Error()}
-		}
-		nickname = strings.TrimSpace(sa.Account.Nickname)
-		fileJSON, errBuild := buildAuthFileJSON(sa, false, displayNote(sa, nil, false), nil)
-		if errBuild != nil {
-			return map[string]any{"success": false, "status": status, "done": true,
-				"error": "login succeeded but the credential could not be encoded: " + errBuild.Error()}
-		}
-		if errSave := hostAuthSaveJSONFn(authFileNameFor(sa), fileJSON); errSave != nil {
-			return map[string]any{"success": false, "status": status, "done": true,
-				"error": "login succeeded but saving the account failed: " + errSave.Error()}
+		if sa, parseErr := parseStored(response.Auth.StorageJSON); parseErr == nil {
+			nickname = strings.TrimSpace(sa.Account.Nickname)
 		}
 	}
 	return map[string]any{
-		"success":  success,
-		"status":   status,
-		"message":  env.Result.Message,
-		"nickname": nickname,
-		"done":     status != string(pluginapi.AuthLoginStatusPending),
+		"success": success, "status": string(response.Status), "message": response.Message,
+		"nickname": nickname, "done": response.Status != pluginapi.AuthLoginStatusPending,
+		"persistent": persistent, "expiresAt": expires.UTC().Format(time.RFC3339),
+		"background_polling": false,
 	}
 }

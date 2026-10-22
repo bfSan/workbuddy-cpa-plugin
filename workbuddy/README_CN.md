@@ -2,14 +2,15 @@
 
 [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 的 **腾讯 CodeBuddy**
 （国内版 `copilot.tencent.com` + 国际版 `workbuddy.ai`）原生 OAuth 提供商插件：
-按账号动态发现模型、流式执行、积分感知调度、每日自动签到、内置管理面板。
+按账号动态发现模型、流式执行、配额状态维护、每日自动签到、内置管理面板。
+账号择优由 CPA／staged 负责，本插件不注册 scheduler.pick。
 
 [English → README.md](README.md)
 
 ## 功能
 
 - **OAuth 登录** — 通过宿主 auth store 管理多账号 `workbuddy-<uid>.json`，
-  CN 和 Global 共用一个插件、一份配置。
+  CN 和 Global 共用一个插件、一份配置；支持有界的登录任务落盘与重启恢复。
 - **模型目录**：默认按已认证账号发现并缓存可用模型，也可以用 YAML 中的完整
   列表替代 WorkBuddy discovery。两种模式都会用 models.dev 补充缺失的 metadata。
   宿主侧 `oauth-model-alias` / `oauth-excluded-models` 配置仍然生效。插件自身的
@@ -17,18 +18,19 @@
 - **执行器** — OpenAI 兼容 chat completions，流式（真 SSE，走 `host.stream.emit`）
   和非流式（SSE 折叠成单个 completion）都支持。内置 `tool_choice` 归一、
   Claude Code 模板清洗、按区域注入 system message。
-- **积分生命周期** — CN 账号耗尽自动 `disabled`，签到回血后自动恢复；
-  Global 账号耗尽**删除** auth 文件（一次性 trial 额度）。Executor 遇到硬
-  积分错误立即触发 reconcile。
+- **配额冻结** — 按证据区分临时限流、模型调用额度和共享积分耗尽；仅冻结受影响范围，
+  展示原因、下次探测时间及恢复条件。不因零余额删除账号，不自动解除人工禁用。
 - **每日签到** — CN 账号每天 09:00 和 21:00 自动签到（可配置）。面板可手动
-  全部签到。Per-account 互斥锁防止多浏览器标签并发重复签到。
+  全部签到。领取后必须复查确认；不确定结果只验证、不盲目重领。临时失败有最多三次
+  日内后台重试，面板可查看最近结果和下次重试时间。
 - **屏蔽词混淆** — 可选，默认关闭。按可编辑词表在提示词与 tool metadata 中
   插入 U+200B，详见下文「屏蔽词混淆」。
-- **Trial 领取** — Global 账号可在面板领取一次性 250 积分专家加油包。
 - **积分面板** — 内嵌面板 `/v0/resource/plugins/workbuddy/panel`，含积分
   进度条、套餐徽章、耗尽/禁用标记、CN/Global 筛选、凭证导入。
 - **Usage 上报** — 实现 `UsagePlugin` 能力，每条请求的 usage record 转发到
   可配置的 CPAMP 端点。未配置 URL+key 时不上报。
+
+实现细节、持久化范围、平台限制及 API：[可靠性功能说明](docs/reliability.md)。
 
 ## 快速开始
 

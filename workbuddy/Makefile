@@ -12,7 +12,7 @@ build:
 # Run all tests with race detector.
 test:
 	$(GO) test -race -count=1 ./...
-	$(NODE) --test panel.test.js
+	$(NODE) --test panel.test.js panel.state.test.js
 
 # Browser check of the credit-consistency warning, against the LIVE deployment.
 # Separate from `test` because it needs a running CPA and a management key, and

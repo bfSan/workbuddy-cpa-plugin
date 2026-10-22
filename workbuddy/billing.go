@@ -213,19 +213,25 @@ func fetchCheckinStatusWithCallback(sa *storedAuth, callbackID string) (*checkin
 	var data json.RawMessage
 	var lastErr error
 	for _, path := range []string{"/v2/billing/meter/checkin-activity-status", "/v2/billing/meter/checkin-status"} {
-		d, err := billingCallWithCallback(sa, path, nil, callbackID)
+		d, err := checkinBillingCall(sa, path, callbackID)
 		if err == nil {
 			data = d
 			lastErr = nil
 			break
 		}
 		lastErr = err
+		if checkinStatusHTTPError(err) != 404 {
+			break
+		}
 	}
 	if lastErr != nil {
 		return nil, lastErr
 	}
 	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	if err := validatedCheckinStatus(m); err != nil {
 		return nil, err
 	}
 	sum := &checkinSummary{
@@ -608,20 +614,25 @@ func performCheckinCall(sa *storedAuth) (map[string]any, error) {
 }
 
 func performCheckinCallWithCallback(sa *storedAuth, callbackID string) (map[string]any, error) {
-	data, err := billingCallWithCallback(sa, "/v2/billing/meter/daily-checkin", nil, callbackID)
+	data, err := checkinBillingCall(sa, "/v2/billing/meter/daily-checkin", callbackID)
 	if err != nil {
-		// billingCall returns business errors (code != 0) as Go errors; surface
-		// them as a structured result so the panel can show "already checked in".
-		return map[string]any{"success": false, "message": err.Error()}, nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, err
 	}
-	// Explicitly set success as bool — upstream may return "true" (string)
-	// which would cause downstream `out["success"] == true` to fail silently
-	// (P1-2 logic bug: type mismatch on success field).
-	m["success"] = true
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil || m == nil {
+		return nil, &checkinRequestError{Kind: "protocol", Uncertain: true}
+	}
+	// Preserve an explicit negative response. An acknowledgement alone is not
+	// confirmation; checkinOneAccount verifies via the status endpoint.
+	if _, present := m["success"]; present {
+		accepted, valid := checkinBool(m, "success")
+		if !valid {
+			return nil, &checkinRequestError{Kind: "protocol", Uncertain: true}
+		}
+		m["success"] = accepted
+	} else {
+		m["success"] = true // transport acknowledgement only
+	}
 	return m, nil
 }
 

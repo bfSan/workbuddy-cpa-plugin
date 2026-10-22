@@ -415,7 +415,7 @@ func panelRealmList() []workBuddyRealm {
 // realmFactThinkingValue renders the upstream reasoning capability for one
 // realm cell. The status vocabulary is deliberately conservative:
 //
-//	supported    — upstream advertised at least one effort level
+//	supported    — upstream advertised an effort list or a default effort
 //	unsupported  — upstream explicitly said supportsReasoning is false
 //	off_only     — upstream allows disabling thinking but named no level
 //	               (forward-compatible slot; the observed catalog never
@@ -435,6 +435,8 @@ func realmFactThinkingValue(f modelFacts) map[string]any {
 		status = "supported"
 	case f.SupportsReasoning != nil && !*f.SupportsReasoning:
 		status = "unsupported"
+	case strings.TrimSpace(f.DefaultEffort) != "":
+		status = "supported" // A reported default is useful even without a level list.
 	case f.CanDisableThinking != nil && *f.CanDisableThinking:
 		status = "off_only"
 	}

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.25 — 2026-10-22
+
+- Render reasoning effort levels with only the upstream default highlighted and
+  labeled, independently for CN/Global. Unknown defaults stay explicitly unknown.
+- Show default-only metadata even when the upstream omits its supported-level list.
+- Keep reasoning labels read-only and escaped. Explain that request parameters
+  may override catalog defaults; no outgoing reasoning parameters are changed.
+
 ## 0.9.24 — 2026-10-22
 
 - Remove all check-in history UI: toolbar/account entry points, record section,

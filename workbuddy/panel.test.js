@@ -634,7 +634,7 @@ test("renderModels shows realm columns and read-only facts", async () => {
   assert.match(html, /0\.79x/);
   assert.match(html, /倍率 0\.79x/);
   assert.match(html, /未加载|—/);
-  assert.match(html, /思考 未上报/);
+  assert.match(html, /思考 默认未上报/);
   assert.match(html, /data-model-action="drag"/);
   assert.doesNotMatch(html, /restoreModel\(/);
 });
@@ -892,26 +892,40 @@ test("realm credits render one unified multiplier string", () => {
   assert.doesNotMatch(credit({ value: "x0.34 credits", rate: 0.34 }), /credits/);
 });
 
-test("realm thinking reports the default level, unknown and unsupported", () => {
+test("realm thinking highlights only the upstream default and does not invent missing defaults", () => {
   const { context } = loadPanel();
+  const render = thinking => context.realmCell({ cn: { status: "present", present: true, thinking } }, "cn");
   const think = thinking => {
-    const html = context.realmCell({ cn: { status: "present", present: true, thinking } }, "cn");
-    const match = html.match(/思考 ([^<]*)<\/span>/);
-    assert.ok(match, `no 思考 fact in ${html}`);
-    return match[1];
+    const markup=render(thinking),match=markup.match(/思考 ([\s\S]*?)<\/span>/);
+    assert.ok(match); return match[1];
   };
-  const supported = { status: "supported", default: "high", can_disable: true, levels: ["low", "high", "max"] };
-  assert.equal(think(supported), "默认 high（low/high/max）");
-  // can_disable must not change the wording on its own.
-  assert.equal(think({ ...supported, can_disable: false }), "默认 high（low/high/max）");
-  assert.equal(think({ status: "unknown", levels: [] }), "未上报");
-  assert.equal(think({}), "未上报");
-  assert.equal(think(undefined), "未上报");
-  assert.equal(think({ status: "unsupported", levels: [] }), "不支持");
-  assert.equal(think({ status: "off_only", levels: [] }), "仅可关闭");
-  assert.equal(think({ status: "off_only", levels: ["high"] }), "仅可关闭（high）");
-  // supported without a default still lists the levels it accepts.
-  assert.equal(think({ status: "supported", levels: ["low", "high"] }), "low / high");
+  const supported={status:"supported",default:"high",levels:["low","high","max"]};
+  const expected='low / <strong class="thinking-default">high（默认）</strong> / max';
+  assert.equal(think(supported),expected);
+  assert.equal(think({...supported,can_disable:false}),expected);
+  assert.match(render(supported),/上游目录的默认思考强度；请求可覆盖，不代表本次请求的实际强度/);
+  for(const missing of [{},{status:"unknown",levels:[]},undefined]) assert.equal(think(missing),"默认未上报");
+  assert.equal(think({status:"supported",levels:["low","high"]}),"low / high（默认未上报）");
+  assert.equal(think({status:"unknown",default:"medium"}),'<strong class="thinking-default">medium（默认）</strong>');
+  assert.equal(think({status:"supported",default:"max",levels:["low","high"]}),'low / high / <strong class="thinking-default">max（默认）</strong>');
+  assert.equal(think({status:"supported",default:"high",levels:[" low ","high","high",null]}),'low / <strong class="thinking-default">high（默认）</strong>');
+  assert.equal(think({status:"unsupported",default:"high",levels:[]}),"不支持");
+  assert.equal(think({status:"off_only",levels:[]}),"仅可关闭");
+  assert.equal(think({status:"off_only",levels:["high"]}),"仅可关闭（high）");
+});
+
+test("thinking defaults remain realm-specific read-only escaped labels", () => {
+  const {context}=loadPanel();
+  const row={cn:{status:"present",thinking:{status:"supported",default:"high",levels:["low","medium","high"]}},global:{status:"present",thinking:{status:"supported",default:"medium",levels:["low","medium","high"]}}};
+  const cn=context.realmCell(row,"cn"),global=context.realmCell(row,"global");
+  assert.match(cn,/<strong class="thinking-default">high（默认）<\/strong>/);
+  assert.doesNotMatch(cn,/<strong[^>]*>medium/);
+  assert.match(global,/<strong class="thinking-default">medium（默认）<\/strong>/);
+  assert.doesNotMatch(global,/<strong[^>]*>high/);
+  const hostile=context.thinkingFactsHTML({default:'<img src=x onerror="evil()">',levels:['<script>evil()</script>']});
+  assert.match(hostile,/&lt;img/);assert.match(hostile,/&lt;script&gt;/);
+  assert.doesNotMatch(hostile,/<img|<script|onclick=/);
+  assert.doesNotMatch(cn+global,/<button|data-thinking|data-effort/);
 });
 
 // 加粗必须落在【实际生效的档位】上，而不是上游自报的默认档：无 override 时
@@ -999,7 +1013,7 @@ test("realm facts escape dynamic values and never use inline handlers", async ()
   await panel.context.loadModels(false);
   const rendered = panel.elements.get("modelList").innerHTML;
   assert.match(rendered, /倍率 0\.34x/);
-  assert.match(rendered, /思考 默认 high（low\/high）/);
+  assert.match(rendered, /思考 low \/ <strong class="thinking-default">high（默认）<\/strong>/);
   // 加粗给生效值（300K），不是上游默认档（600K）。
   assert.match(rendered, /<button[^>]*class="ctx-tier ctx-tier-on"[^>]*data-ctx-tokens="300000"[^>]*aria-pressed="true"[^>]*title="当前生效档位（300K）[^"]*">300K<\/button>/);
   assert.doesNotMatch(rendered, /class="ctx-tier ctx-tier-on"[^>]*>600K<\/button>/);

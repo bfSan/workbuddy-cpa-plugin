@@ -112,6 +112,8 @@ func TestPanelRealmThinkingSeparatesUnreportedFromUnsupported(t *testing.T) {
 		want  string
 	}{
 		{"levels reported", modelFacts{SupportedEfforts: []string{"low", "high"}}, "supported"},
+		{"default only", modelFacts{DefaultEffort: "high"}, "supported"},
+		{"explicit unsupported beats default only", modelFacts{DefaultEffort: "high", SupportsReasoning: &no}, "unsupported"},
 		{"explicitly unsupported", modelFacts{SupportsReasoning: &no}, "unsupported"},
 		{"nothing reported", modelFacts{}, "unknown"},
 		{"reasoning capable but no levels", modelFacts{SupportsReasoning: &yes}, "unknown"},

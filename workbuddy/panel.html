@@ -66,6 +66,7 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .model-row{border:1px solid var(--border);border-radius:8px;background:var(--surface)}.drag-handle{cursor:grab;touch-action:none}.drag-handle:active{cursor:grabbing}.realm-cell{min-width:0}.realm-facts{display:flex;flex-direction:column;gap:2px;color:var(--mut);font-size:12px;white-space:nowrap}.realm-facts span:first-child{color:var(--fg)}
 /* 当前默认上下文档位：加粗 + 主色，让操作者一眼看出用的是哪一档 */
 .realm-facts .ctx-default{color:var(--acc);font-weight:700}
+.realm-facts .thinking-default{color:var(--acc);font-weight:700}
 .model-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-weight:600;min-width:0;flex:1 1 auto;overflow-wrap:anywhere}
 .model-name{font-size:12px;flex:0 0 auto;max-width:32%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .model-context{flex:0 0 128px;max-width:128px;background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:4px 6px;color:var(--fg);font-size:12px}
@@ -1063,20 +1064,23 @@ function creditText(c){
   if(Number(token)===0) return "免费 (0x)";
   return token+"x";
 }
-// thinkingText 把上游 thinking 能力翻成一句人话。
-// supported 时带上当前默认档位；unknown 表示上游没报；unsupported 表示不支持。
-function thinkingText(t){
-  const think=t||{};
-  const status=String(think.status||"unknown").toLowerCase();
-  const levels=Array.isArray(think.levels)?think.levels.map(v=>String(v==null?"":v).trim()).filter(Boolean):[];
-  const rawDefault=think.default==null?"":String(think.default).trim();
-  if(status==="unsupported") return "不支持";
-  if(status==="off_only") return levels.length?`仅可关闭（${levels.join("/")}）`:"仅可关闭";
-  if(status==="supported"||levels.length){
-    if(rawDefault) return `默认 ${rawDefault}${levels.length?`（${levels.join("/")}）`:""}`;
-    return levels.length?levels.join(" / "):"未上报";
+// Upstream catalog defaults are display metadata, not the last request's effort.
+// These are labels, not controls: never inject/override reasoning_effort here.
+function thinkingFactsHTML(t){
+  const think=t||{},status=String(think.status||"unknown").toLowerCase();
+  const levels=[],seen=new Set();
+  for(const raw of Array.isArray(think.levels)?think.levels:[]){
+    const value=String(raw==null?"":raw).trim(),key=value.toLowerCase();
+    if(value&&!seen.has(key)){seen.add(key);levels.push(value);}
   }
-  return "未上报";
+  const def=think.default==null?"":String(think.default).trim();
+  if(status==="unsupported")return "不支持";
+  if(status==="off_only")return levels.length?`仅可关闭（${levels.map(esc).join("/")}）`:"仅可关闭";
+  if(!def)return levels.length?levels.map(esc).join(" / ")+"（默认未上报）":"默认未上报";
+  if(!seen.has(def.toLowerCase()))levels.push(def);
+  return levels.map(level=>level.toLowerCase()===def.toLowerCase()
+    ? `<strong class="thinking-default">${esc(level)}（默认）</strong>`
+    : esc(level)).join(" / ");
 }
 // contextFactsHTML 渲染可选的上下文档位，并把【实际生效的那一档】加粗高亮。
 //
@@ -1289,8 +1293,8 @@ function realmCell(m, realm, modelId){
   // 出现，且本行的倍率原义是"账号基础倍率"，混入活动价后无法再回答"这个模型原价
   // 多少"。要看折扣去上面的活动卡。
   const credit=creditText(r.credits||{});
-  const think=thinkingText(r.thinking||{});
-  return `<div class="realm-facts"><span>倍率 ${esc(credit)}</span><span>思考 ${esc(think)}</span><span title="该分区上报的上下文档位；加粗项为当前实际生效档位">上下文 ${contextFactsHTML(r,modelId)}</span></div>`;
+  const think=thinkingFactsHTML(r.thinking||{});
+  return `<div class="realm-facts"><span>倍率 ${esc(credit)}</span><span title="上游目录的默认思考强度；请求可覆盖，不代表本次请求的实际强度">思考 ${think}</span><span title="该分区上报的上下文档位；加粗项为当前实际生效档位">上下文 ${contextFactsHTML(r,modelId)}</span></div>`;
 }
 function renderModels(){
   const box=document.getElementById("modelList");

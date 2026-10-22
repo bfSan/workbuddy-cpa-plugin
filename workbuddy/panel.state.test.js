@@ -43,7 +43,6 @@ function harness({ storage = new Map(), sessionStorage, now = 1900000000000 } = 
   vm.createContext(c); vm.runInContext(source, c);
   c.toast = (...args) => toasts.push(args);
   c.load = async () => true;
-  document.getElementById('checkinHistoryBox').hidden = true;
   const run = code => vm.runInContext(code, c);
   return { c, document, elements, storage, timers, toasts, opens, logs, run,
     now: () => clock, advance(ms) { clock += ms; },
@@ -294,8 +293,6 @@ test('quota machine codes are localized and account_model keeps model-scoped cle
   assert.match(h.c.freezeRecoveryText('upstream_retry_after'), /上游指定重试时间/);
   assert.match(h.c.freezeRecoveryText('upstream_reset'), /上游额度重置/);
   assert.equal(h.c.displayStatusTime('0001-01-01T00:00:00Z'), '—');
-  const record = h.c.checkinRecordHTML({ state: 'failed', retry_allowed: false, next_retry_at: '0001-01-01T00:00:00Z' });
-  assert.doesNotMatch(record, /下次重试|0001-/);
   assert.equal(h.c.checkinNextRetry({ retry_allowed: false, next_retry_at: '2026-10-22T06:10:00Z' }), '');
   assert.equal(h.c.checkinNextRetry({ retry_scheduled: false, next_retry_at: '2026-10-22T06:10:00Z' }), '');
 });
@@ -309,7 +306,7 @@ test('checkin confirmation is strictly authoritative, never inferred from succes
   assert.equal(h.c.isCheckinDoneResult({ confirmed: true, state: 'success' }), true);
   assert.equal(h.c.isCheckinDoneResult({ success: true, reason: 'already' }), true);
   const card = h.c.card({ auth_index: '1', name: 'a', checkin: { today_checked_in: true, confirmed: false } });
-  assert.doesNotMatch(card, />已签到</); assert.match(card, /data-action="checkin-history"/);
+  assert.doesNotMatch(card, />已签到</); assert.doesNotMatch(card, /data-action="checkin-history"/);
 });
 
 test('pending checkin produces warning with next retry, never success toast or done button', async () => {
@@ -338,27 +335,23 @@ test('unrelated single-account response cannot mark requested account done', asy
   await h.c.checkin('requested', button); assert.notEqual(button.innerHTML, '已签到');
 });
 
-test('checkin history entry scopes GET, shows retries/process-local records, escapes all text', async () => {
-  const h = harness(); const requests = [];
-  const row = { auth_index: 'a<id>', auth_id: 'id', source: '<img>', day: '2026-10-22', state: 'pending_confirmation', message: '<script>bad</script>', at: '2026-10-22T06:00:00Z', retry_count: 2, next_retry_at: '2026-10-22T06:05:00Z', confirmed: false, retry_allowed: true, confirm_only: true, manual: true };
-  h.c.api = async p => { requests.push(p); return { enabled: true, persistent: false, schedule: ['09:00', '21:00'], max_retries: 3, retry_delays_seconds: [60, 120, 300], latest: [row], history: [row] }; };
-  await h.c.openCheckinHistory('x&y'); await h.c.refreshCheckinHistory(element());
-  assert.deepEqual(requests, ['/checkin/status?auth_index=x%26y', '/checkin/status?auth_index=x%26y']);
-  assert.equal(h.document.getElementById('checkinHistoryBox').hidden, false);
-  const markup = h.document.getElementById('checkinHistoryList').innerHTML;
-  assert.match(markup, /等待上游确认/); assert.match(markup, /下次重试/); assert.match(markup, /仅复查状态，不重复领取/);
-  assert.match(markup, /重试 2 次/); assert.match(markup, /&lt;script&gt;/); assert.doesNotMatch(markup, /<img>|<script>/);
-  assert.match(h.document.getElementById('checkinHistoryMeta').textContent, /60 \/ 120 \/ 300/);
-  assert.match(h.document.getElementById('checkinHistoryMeta').textContent, /重启清空/);
+test('panel excludes checkin history but keeps normal checkin controls', () => {
+  const h = harness();
+  assert.doesNotMatch(html, /签到记录|签到运行记录|checkinHistory|CheckinHistory|checkin-history|checkin-record|checkinRecordHTML|\/checkin\/status/);
+  for (const name of ['openCheckinHistory', 'refreshCheckinHistory', 'renderCheckinHistory', 'checkinRecordHTML']) assert.equal(typeof h.c[name], 'undefined');
+  const card = h.c.card({ auth_index: 'a', name: 'CN', checkin: { active: true, today_checked_in: false } });
+  assert.match(card, /data-action="checkin"/); assert.doesNotMatch(card, /签到记录|checkin-history/);
+  assert.match(html, /onclick="checkinAll\(this\)"/); assert.match(html, /id="autoToggle"/);
 });
 
-test('checkin history caps records, handles empty status and hides raw transport errors', async () => {
-  const h = harness();
-  h.c.renderCheckinHistory({ history: Array.from({ length: 105 }, (_, i) => ({ auth_index: 'a' + i, state: 'failed' })) });
-  assert.equal((h.document.getElementById('checkinHistoryList').innerHTML.match(/class="checkin-record"/g) || []).length, 100);
-  h.c.renderCheckinHistory({ latest: [], history: [] }); assert.match(h.document.getElementById('checkinHistoryList').innerHTML, /暂无运行记录/);
-  h.c.api = async () => { throw new Error('proxy secret-token'); }; await h.c.openCheckinHistory();
-  assert.doesNotMatch(h.document.getElementById('checkinHistoryMeta').textContent, /proxy|secret-token/);
+test('single and batch checkin never query or advertise history', async () => {
+  const h = harness(), requests = [];
+  h.run('lastAccounts=[{auth_index:"1"}]');
+  h.c.api = async p => { requests.push(p); assert.equal(p, '/checkin'); return { results: [{ auth_index: '1', confirmed: false, state: 'pending_confirmation' }] }; };
+  await h.c.checkin('1', element()); await h.c.checkinAll(element());
+  assert.deepEqual(requests, ['/checkin', '/checkin']);
+  assert.doesNotMatch(JSON.stringify(h.toasts), /签到记录|签到运行记录|运行记录/);
+  assert.equal(h.run('lastAccounts[0].checkin.today_checked_in'), false);
 });
 
 test('desensitize save waits for matching effective runtime settings', async () => {

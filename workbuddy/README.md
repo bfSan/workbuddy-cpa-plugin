@@ -36,7 +36,8 @@ built-in management dashboard. Account selection belongs to CPA/staged, not this
   time (configurable). Manual "check in all" from the panel. Per-account
   mutex prevents concurrent claims. Success requires a status confirmation;
   ambiguous POSTs are verified rather than blindly replayed. Transient failures
-  have at most three same-day background retries and observable run history.
+  have at most three same-day background retries. Check-in history is not exposed
+  in the panel.
 - **Prompt obscuring** — optional, off by default. Inserts U+200B into a
   configurable term list wherever those terms appear in prompt and tool
   metadata. See "Prompt obscuring" below.

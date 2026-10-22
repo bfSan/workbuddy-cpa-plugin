@@ -125,7 +125,6 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .cooldown-list{margin-top:8px;display:flex;flex-direction:column;gap:6px}
 .cooldown-row{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px}
-.checkin-record{padding:8px 0;border-top:1px solid var(--border);overflow-wrap:anywhere}
 .cooldown-detail{min-width:0;flex:1;overflow-wrap:anywhere}
 .cooldown-row .cd-model{font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
 .cooldown-row .cd-left{color:var(--warn);font-variant-numeric:tabular-nums;flex:0 0 auto}
@@ -277,7 +276,6 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="sec" onclick="openDesensitizeModal()">屏蔽词设置</button>
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
-    <button class="sec" onclick="openCheckinHistory()">签到运行记录</button>
     <label class="toggle" title="仅 CN 账号 09:00 / 21:00"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到(CN)</label>
     <span class="toggle" id="svtime"></span>
   </div>
@@ -291,11 +289,6 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
-  <section class="card" id="checkinHistoryBox" hidden style="margin-top:16px" aria-label="签到运行记录">
-    <div class="summary-hd"><h2 id="checkinHistoryTitle">签到运行记录</h2><button class="sec" onclick="refreshCheckinHistory(this)">手动刷新记录</button></div>
-    <p id="checkinHistoryMeta" class="pb-meta" role="status"></p>
-    <div id="checkinHistoryList" style="max-height:420px;overflow:auto"></div>
-  </section>
   <div class="card promo-box" id="promoBox" style="display:none;margin-top:16px"></div>
   <div class="card" id="modelBox" style="margin-top:16px">
     <h2>模型列表 <span style="display:flex;gap:6px;align-items:center">
@@ -510,7 +503,6 @@ function bindCardActions(root){
       const act=ev.currentTarget.dataset.action;
       const idx=ev.currentTarget.dataset.authIndex;
       if(act==="checkin") checkin(idx, ev.currentTarget);
-      else if(act==="checkin-history") openCheckinHistory(idx);
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
       else if(act==="cooldown-clear") clearCooldown(ev.currentTarget.getAttribute("data-auth-id")||idx, ev.currentTarget.getAttribute("data-model"), ev.currentTarget);
       else if(act==="rename") renameAccount(idx, ev.currentTarget.dataset.nick||"");
@@ -578,7 +570,7 @@ function card(a){
     const btnClass=checked?"done":"sec";
     const btnText=checked?"已签到":"签到";
     const btnDisabled=checked?" disabled=\"disabled\"":"";
-    actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button><button class="sec" data-action="checkin-history" data-auth-index="${esc(a.auth_index)}">签到记录</button>`;
+    actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`;
   }
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
   const cooling=Array.isArray(a.cooling)?a.cooling.filter(c=>Number(c&&c.seconds)>0):[];
@@ -1563,7 +1555,7 @@ function checkinResultToast(res,who){
   const name=res.nickname||who||"账号";
   if(isCheckinDoneResult(res)){toast(name+"：已确认签到","ok");return}
   const nextRetry=checkinNextRetry(res);
-  const detail=nextRetry?"下次重试："+nextRetry:"查看签到运行记录了解进度";
+  const detail=nextRetry?"下次重试："+nextRetry:"请稍后刷新账号状态";
   toast(name+"："+checkinStateLabel(res),res.error||res.state==="failed"?"err":"warn",detail);
 }
 function applyCheckinResults(results){
@@ -1573,40 +1565,6 @@ function applyCheckinResults(results){
     if(!a)continue;
     a.checkin=Object.assign({},a.checkin||{},{confirmed:isCheckinDoneResult(res),today_checked_in:isCheckinDoneResult(res),state:res.state,next_retry_at:res.next_retry_at});
   }
-}
-let checkinHistoryIndex="";
-let checkinHistoryGeneration=0;
-function checkinRecordHTML(r){
-  const details=[r.message||"",r.confirm_only?"仅复查状态，不重复领取":"",r.retry_allowed?"允许有限重试":"",r.manual?"手动触发":"",checkinNextRetry(r)?"下次重试 "+checkinNextRetry(r):""];
-  return `<div class="checkin-record"><div><strong>${esc(r.auth_index||r.auth_id||"账号")}</strong> · ${esc(checkinStateLabel(r))} · ${esc(r.source||"未知来源")} · ${esc(r.day||"")}</div><div class="pb-meta">${esc(displayStatusTime(r.at))} · 重试 ${esc(String(r.retry_count??0))} 次 · ${isCheckinDoneResult(r)?"已确认":"未确认"}</div><div class="pb-meta">${details.filter(Boolean).map(v=>esc(String(v))).join(" · ")}</div></div>`;
-}
-function renderCheckinHistory(d){
-  const list=value=>Array.isArray(value)?value:(value&&typeof value==="object"?(value.state?[value]:Object.values(value)):[]);
-  const latest=list(d.latest),history=list(d.history).slice(-100).reverse();
-  const schedule=typeof d.schedule==="string"?d.schedule:JSON.stringify(d.schedule||[]);
-  const delays=Array.isArray(d.retry_delays_seconds)?d.retry_delays_seconds:[60,120,300];
-  document.getElementById("checkinHistoryMeta").textContent=(d.enabled?"自动签到已开启":"自动签到已关闭")+" · 计划 "+schedule+" · 最多重试 "+(d.max_retries??3)+" 次（"+delays.join(" / ")+" 秒） · 记录仅当前进程保存，重启清空";
-  document.getElementById("checkinHistoryList").innerHTML=(latest.length?'<h3>当前进度</h3>'+latest.map(checkinRecordHTML).join(""):"<p>暂无运行记录</p>")+(history.length?'<h3>最近记录（最多 100 条）</h3>'+history.map(checkinRecordHTML).join(""):"");
-}
-async function refreshCheckinHistory(btn){
-  const generation=++checkinHistoryGeneration,index=checkinHistoryIndex;
-  busy(btn,true);
-  try{
-    const d=await api("/checkin/status"+(index?"?auth_index="+encodeURIComponent(index):""));
-    if(generation!==checkinHistoryGeneration)return;
-    if(d.error)throw new Error("status unavailable");
-    renderCheckinHistory(d);
-  }catch(_){if(generation===checkinHistoryGeneration)document.getElementById("checkinHistoryMeta").textContent="读取签到记录失败，请检查管理权限或稍后刷新（旧后端可能不支持）。"}
-  finally{busy(btn,false)}
-}
-function openCheckinHistory(idx){
-  checkinHistoryIndex=idx==null?"":String(idx);
-  const box=document.getElementById("checkinHistoryBox");box.hidden=false;
-  document.getElementById("checkinHistoryTitle").textContent="签到运行记录"+(checkinHistoryIndex?" · 账号 "+checkinHistoryIndex:" · 全部账号");
-  document.getElementById("checkinHistoryList").innerHTML="";
-  document.getElementById("checkinHistoryMeta").textContent="读取中…";
-  if(box.scrollIntoView)box.scrollIntoView({block:"nearest"});
-  return refreshCheckinHistory();
 }
 async function checkin(idx,btn){
   busy(btn,true);
@@ -1619,7 +1577,6 @@ async function checkin(idx,btn){
     applyCheckinResults([Object.assign({auth_index:idx},res)]);
     if(isCheckinDoneResult(res))markCheckinDone(btn);else busy(btn,false);
     await load(false);
-    if(!document.getElementById("checkinHistoryBox").hidden)await refreshCheckinHistory();
   }catch(_){toast("签到请求失败","err","请检查管理权限或网络后重试");busy(btn,false)}
 }
 async function checkinAll(btn){
@@ -1635,9 +1592,8 @@ async function checkinAll(btn){
       const res=rs.find(r=>r.auth_index!=null&&String(r.auth_index)===String(b.dataset.authIndex));
       if(isCheckinDoneResult(res))markCheckinDone(b);
     });
-    toast("批量签到："+confirmed+" 已确认 / "+pending+" 待确认 / "+failed+" 失败",failed?"err":pending||!confirmed?"warn":"ok","仅已确认的账号标为已签到；可查看签到运行记录");
+    toast("批量签到："+confirmed+" 已确认 / "+pending+" 待确认 / "+failed+" 失败",failed?"err":pending||!confirmed?"warn":"ok","仅已确认的账号标为已签到");
     await load(false);
-    if(!document.getElementById("checkinHistoryBox").hidden)await refreshCheckinHistory();
   }catch(_){toast("批量签到失败","err","请检查管理权限或网络后重试")}
   finally{busy(btn,false)}
 }

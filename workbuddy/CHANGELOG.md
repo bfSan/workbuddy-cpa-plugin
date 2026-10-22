@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.24 — 2026-10-22
+
+- Remove all check-in history UI: toolbar/account entry points, record section,
+  rendering/refresh functions and history API requests. Keep ordinary check-in
+  controls and current-result feedback.
+- Preserve server-side confirmation, bounded retries and diagnostic state.
+- Add regressions prohibiting history UI/query code while retaining normal
+  single/batch check-in.
+
 ## 0.9.23 — 2026-10-22
 
 - Persist bounded OAuth tasks and intermediate token/account results on Unix,

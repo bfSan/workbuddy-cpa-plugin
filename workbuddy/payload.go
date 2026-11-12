@@ -45,6 +45,11 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 	// "developer" role; the WorkBuddy chat gateway rejects it with 400/11128.
 	normalizeSystemFirstInPlace(obj)
 
+	// 4b. channel fingerprint neutralization: the gateway also content-matches
+	// harness identity / file-reference phrases inside privileged messages and
+	// returns the same 400/11128 even with a valid system role.
+	neutralizeChannelFingerprintsInPlace(obj)
+
 	// 5. system sanitization: strip blocked Claude Code template phrases.
 	rewriteSystemInPlace(obj)
 

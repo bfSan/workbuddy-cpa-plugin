@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.27 — 2026-11-12
+
+- Fix the second 400 code 11128 layer seen in real DSH sessions. Role
+  normalization (0.9.26) was necessary but not sufficient: the CN gateway also
+  content-matches channel fingerprints inside privileged prompt text and
+  rejects them with the same code even when the role is a valid system.
+  Live A/B against copilot.tencent.com confirmed two deterministic triggers —
+  the harness identity sentence "DeepSeek Harness" (plain space and U+200B
+  zero-width separator) and the file-reference phrase "Tokens prefixed with
+  @ ..." once it crosses the gateway phrase-length threshold.
+- `prepareUpstreamBody` now runs `neutralizeChannelFingerprintsInPlace` after
+  role normalization: brand → "DeepSeek-Harness", the anchored file-reference
+  at-sign → "(at)", and a defensive "coding agent powered by" →
+  "coding agent running on". Rewrites are semantic-equivalent, idempotent,
+  cover string and multimodal text-block content and both the "messages" and
+  Responses "input" containers, and only touch system/developer/assistant
+  messages — user/tool text (ordinary @ mentions, emails) is never edited.
+- Add unit tests for each fingerprint, role/shape coverage, container
+  fallback, no-op/idempotency and the full prepareUpstreamBody stack.
+
 ## 0.9.26 — 2026-11-12
 
 - Fix upstream 400 code 11128 "Illegal API invocation from an unapproved

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.26 — 2026-11-12
+
+- Fix upstream 400 code 11128 "Illegal API invocation from an unapproved
+  channel" after host v8.0.61+: the OpenAI Responses translator now preserves
+  the `developer` role instead of downgrading it, but the WorkBuddy chat
+  gateway only accepts `system` and requires it to lead the message array.
+  `prepareUpstreamBody` now maps every `developer` message to `system` in
+  place (content untouched, string and multimodal shapes) and prepends a
+  minimal system placeholder when no system message leads. Both the
+  non-streaming and streaming executor paths share this single compose point.
+- Add regression tests covering role mapping, case-insensitive roles,
+  multimodal content preservation, leading-system guarantee, no-op cases and
+  malformed bodies.
+
 ## 0.9.25 — 2026-10-22
 
 - Render reasoning effort levels with only the upstream default highlighted and

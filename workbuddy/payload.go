@@ -40,7 +40,12 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 	// 3. rewriteModel: swap client model name to upstream model id.
 	rewriteModelInPlace(obj, upstreamModel)
 
-	// 4. system sanitization: strip blocked Claude Code template phrases.
+	// 4. role/shape normalization: developer → system and a guaranteed leading
+	// system message. Required since host v8.0.61 preserves the OpenAI Responses
+	// "developer" role; the WorkBuddy chat gateway rejects it with 400/11128.
+	normalizeSystemFirstInPlace(obj)
+
+	// 5. system sanitization: strip blocked Claude Code template phrases.
 	rewriteSystemInPlace(obj)
 
 	// 5. desensitize the configured prompt and tool metadata fields.
@@ -149,6 +154,47 @@ func ensureSystemMessageInPlace(obj map[string]any, sa *storedAuth) bool {
 		}
 		if role, _ := msg["role"].(string); strings.EqualFold(role, "system") {
 			return false
+		}
+	}
+	systemMsg := map[string]any{
+		"role":    "system",
+		"content": "You are a helpful assistant.",
+	}
+	obj["messages"] = append([]any{systemMsg}, messages...)
+	return true
+}
+
+// normalizeSystemFirstInPlace makes the message array comply with the WorkBuddy
+// chat gateway contract: only "system" is accepted as the privileged prompt
+// role, and the first message must be a system one.
+//
+// Host v8.0.61+ preserves the OpenAI Responses "developer" role instead of
+// downgrading it to user (host commit 00b76771 / CLIProxyAPI#7174). Forwarding
+// developer makes the CN gateway answer 400 code 11128 "Illegal API invocation
+// from an unapproved channel"; the same family covers requests whose first
+// message is not a system prompt. Developer is therefore mapped to system in
+// place (content, string or multimodal, untouched), and when no system message
+// leads the array a minimal placeholder is prepended.
+func normalizeSystemFirstInPlace(obj map[string]any) bool {
+	messages, ok := obj["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		return false
+	}
+	changed := false
+	for _, m := range messages {
+		msg, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		if role, _ := msg["role"].(string); strings.EqualFold(role, "developer") {
+			msg["role"] = "system"
+			changed = true
+		}
+	}
+	// After the role mapping, guarantee a system message leads the array.
+	if first, ok := messages[0].(map[string]any); ok {
+		if role, _ := first["role"].(string); strings.EqualFold(role, "system") {
+			return changed
 		}
 	}
 	systemMsg := map[string]any{

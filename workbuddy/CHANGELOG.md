@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.28 — 2026-11-12
+
+- Fix selected reasoning effort disappearing on the actual WorkBuddy upstream
+  request. CPA v8's Responses → chat ExecutorRequest normalization can omit
+  both `reasoning.effort` and chat `reasoning_effort` from `Payload` while the
+  untouched `OriginalRequest` still carries the caller's explicit selection.
+  The plugin previously used only `Payload`, so WorkBuddy did not receive the
+  tier selected by the caller.
+- `prepareUpstreamBody` now restores an explicit effort from either payload
+  shape or `OriginalRequest`, converts it to WorkBuddy's top-level chat wire
+  fields (`reasoning_effort` plus caller summary, or `reasoning_summary:auto`),
+  and never invents a model default when the caller selected none. Payload
+  values retain priority; malformed/multiline/oversized tokens are ignored.
+- Fix the streaming executor path, which previously coalesced body input and
+  then passed `nil` as `OriginalRequest`, making recovery impossible for the
+  normal DSH streaming path.
+- Add regressions for Responses/chat originals, nested payload conversion,
+  payload precedence, no-default behavior and malformed values.
+
 ## 0.9.27 — 2026-11-12
 
 - Fix the second 400 code 11128 layer seen in real DSH sessions. Role

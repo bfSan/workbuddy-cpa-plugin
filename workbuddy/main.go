@@ -369,7 +369,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.27"
+var version = "0.9.28"
 
 func wbRegistration() registration {
 	return registration{
@@ -829,12 +829,10 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	if sa.Account.UID != "" {
 		authUID = sa.Account.UID
 	}
-	body := req.Payload
-	if len(body) == 0 {
-		body = req.OriginalRequest
-	}
 	// Single-pass JSON rewrite (see handleExecExecute for the non-stream path).
-	body = prepareUpstreamBody(body, nil, sa, upstreamModel)
+	// Keep OriginalRequest available: CPA's normalized Payload can omit the
+	// Responses reasoning.effort selected by the caller.
+	body := prepareUpstreamBody(req.Payload, req.OriginalRequest, sa, upstreamModel)
 
 	headers := streamHeaders()
 	sseFramed := clientNeedsSSEFrame(req.Metadata)

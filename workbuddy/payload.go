@@ -31,6 +31,12 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 		return src
 	}
 
+	// 0. Restore the caller's explicit reasoning effort. CPA v8's Responses →
+	// chat ExecutorRequest normalization can omit reasoning from Payload while
+	// OriginalRequest still carries reasoning.effort. WorkBuddy's chat upstream
+	// only reads the top-level reasoning_effort/reasoning_summary pair.
+	restoreReasoningEffortInPlace(obj, original)
+
 	// 1. forceStream: CodeBuddy rejects non-stream requests.
 	obj["stream"] = true
 
@@ -167,6 +173,91 @@ func ensureSystemMessageInPlace(obj map[string]any, sa *storedAuth) bool {
 	}
 	obj["messages"] = append([]any{systemMsg}, messages...)
 	return true
+}
+
+// restoreReasoningEffortInPlace converts the caller's explicit reasoning
+// selection to the WorkBuddy chat wire shape. CPA v8 may omit the selection
+// from its normalized ExecutorRequest Payload, but keeps the unmodified API
+// body in OriginalRequest. Payload values win; OriginalRequest is recovery
+// evidence only. No model default is invented when the caller selected none.
+func restoreReasoningEffortInPlace(obj map[string]any, original []byte) bool {
+	changed := false
+
+	// Read the already-normalized chat fields first.
+	effort, _ := obj["reasoning_effort"].(string)
+	effort = normalizeReasoningEffort(effort)
+	summary, _ := obj["reasoning_summary"].(string)
+	summary = normalizeReasoningEffort(summary)
+
+	// Some callers or host versions leave the Responses shape in Payload.
+	if nested, ok := obj["reasoning"].(map[string]any); ok {
+		if effort == "" {
+			if value, ok := nested["effort"].(string); ok {
+				effort = normalizeReasoningEffort(value)
+			}
+		}
+		if summary == "" {
+			if value, ok := nested["summary"].(string); ok {
+				summary = normalizeReasoningEffort(value)
+			}
+		}
+		delete(obj, "reasoning")
+		changed = true
+	}
+
+	// Recover fields stripped by the host's Responses → chat normalization.
+	if (effort == "" || summary == "") && len(original) > 0 {
+		var source map[string]any
+		if json.Unmarshal(original, &source) == nil {
+			if effort == "" {
+				if value, ok := source["reasoning_effort"].(string); ok {
+					effort = normalizeReasoningEffort(value)
+				}
+			}
+			if summary == "" {
+				if value, ok := source["reasoning_summary"].(string); ok {
+					summary = normalizeReasoningEffort(value)
+				}
+			}
+			if nested, ok := source["reasoning"].(map[string]any); ok {
+				if effort == "" {
+					if value, ok := nested["effort"].(string); ok {
+						effort = normalizeReasoningEffort(value)
+					}
+				}
+				if summary == "" {
+					if value, ok := nested["summary"].(string); ok {
+						summary = normalizeReasoningEffort(value)
+					}
+				}
+			}
+		}
+	}
+
+	if effort == "" {
+		return changed
+	}
+	if current, _ := obj["reasoning_effort"].(string); current != effort {
+		obj["reasoning_effort"] = effort
+		changed = true
+	}
+	// Official WorkBuddy clients pair an explicit effort with summary=auto.
+	// Preserve a caller-provided summary; use auto only when effort exists.
+	if summary == "" {
+		summary = "auto"
+	}
+	if current, _ := obj["reasoning_summary"].(string); current != summary {
+		obj["reasoning_summary"] = summary
+		changed = true
+	}
+	return changed
+}
+
+// normalizeReasoningEffort bounds one wire token and rejects line-breaking
+// input. It intentionally accepts future effort names rather than hard-coding
+// today's catalog, while still preventing header-like/multiline values.
+func normalizeReasoningEffort(raw string) string {
+	return normalizeModelEffort(raw)
 }
 
 // normalizeSystemFirstInPlace makes the message array comply with the WorkBuddy

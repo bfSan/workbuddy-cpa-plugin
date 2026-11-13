@@ -899,7 +899,7 @@ func TestExistingOAuthPollUsesCurrentExplicitProxy(t *testing.T) {
 	activeClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		currentCalls++
 		if strings.Contains(req.URL.Path, "/auth/token") {
-			return testHTTPResponse(req, `{"code":0,"data":{"accessToken":"access","refreshToken":"refresh","expiresIn":3600}}`), nil
+			return testHTTPResponse(req, `{"code":0,"data":{"accessToken":"access","refreshToken":"refresh","expiresIn":3600,"domain":"www.codebuddy.cn"}}`), nil
 		}
 		if strings.Contains(req.URL.Path, "/login/account") {
 			return testHTTPResponse(req, `{"code":0,"data":{"uid":"uid"}}`), nil
@@ -966,7 +966,7 @@ func TestOAuthRedirectErrorDoesNotExposeLocation(t *testing.T) {
 	const secretLocation = "https://example.invalid/callback?access_token=abcdefghijklmnop"
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if strings.Contains(req.URL.Path, "/auth/token") {
-			return testHTTPResponse(req, `{"code":0,"data":{"accessToken":"access","refreshToken":"refresh","expiresIn":3600}}`), nil
+			return testHTTPResponse(req, `{"code":0,"data":{"accessToken":"access","refreshToken":"refresh","expiresIn":3600,"domain":"www.codebuddy.cn"}}`), nil
 		}
 		resp := testHTTPResponse(req, "")
 		resp.StatusCode = http.StatusFound
@@ -996,7 +996,7 @@ func TestOAuthPollRechecksBlockedStateBeforeAccountLookup(t *testing.T) {
 			if err := configureProxy("direct"); err == nil {
 				return nil, errors.New("blocking reconfigure unexpectedly succeeded")
 			}
-			return testHTTPResponse(req, `{"code":0,"data":{"accessToken":"access","refreshToken":"refresh","expiresIn":3600}}`), nil
+			return testHTTPResponse(req, `{"code":0,"data":{"accessToken":"access","refreshToken":"refresh","expiresIn":3600,"domain":"www.codebuddy.cn"}}`), nil
 		}
 		return testHTTPResponse(req, `{"code":0,"data":{"uid":"uid"}}`), nil
 	})}

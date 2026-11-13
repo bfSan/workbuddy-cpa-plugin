@@ -20,8 +20,14 @@ built-in management dashboard. Account selection belongs to CPA/staged, not this
   still applies; plugin-owned `hidden_models` is a separate persistent deny-list.
 - **Executor** — OpenAI-compatible chat completions, both streaming (real SSE
   via `host.stream.emit`) and non-streaming (SSE folded into a single
-  completion). `tool_choice` normalization, Claude Code template sanitization,
-  and per-realm system-message injection are built in.
+  completion). Includes lifecycle-correct conversation/turn IDs, deep JSON
+  Schema fitting, reversible tool-name aliases, tool→user turn repair,
+  `tool_choice` normalization, targeted channel neutralization and per-realm
+  system-message injection.
+- **Coherent client profiles** — OAuth, token refresh, catalog and chat share a
+  realm-specific version/profile source. CN WorkBuddy, Global WorkBuddy AI and
+  CodeBuddy CLI identities never mix UA and `X-IDE-*` families inside one
+  request; catalog/OAuth traffic never carries chat-only conversation headers.
 - **Quota holds** — evidence-scoped temporary rate limits, model allowances and
   confirmed shared-credit exhaustion, with reason, next-probe time and recovery
   condition. No credential deletion for zero balance; manual disables are preserved.
@@ -49,7 +55,12 @@ built-in management dashboard. Account selection belongs to CPA/staged, not this
   unless a URL+key are configured.
 
 See [reliability behavior and limitations](docs/reliability.md) for persistence,
-manual-disable precedence, retry boundaries and diagnostic APIs.
+manual-disable precedence, retry boundaries and diagnostic APIs. Client-wire
+consistency, transport limits and the optional sidecar roadmap are documented
+in [fingerprint compatibility](docs/fingerprint-compatibility.md). The future
+session-lease/sticky-egress design is recorded in the
+[routing strategy draft](docs/routing-strategy.md); 0.9.29 does not change
+`staged-scheduler`.
 
 ## Quickstart
 

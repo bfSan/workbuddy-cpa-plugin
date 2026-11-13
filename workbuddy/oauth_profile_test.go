@@ -42,7 +42,7 @@ func TestWorkBuddyProfileBuildsDesktopStateRequest(t *testing.T) {
 		t.Fatalf("desktop state request = %s %s", req.Method, req.URL)
 	}
 	for key, want := range map[string]string{
-		"User-Agent":           "WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0",
+		"User-Agent":           workBuddyDesktopUACN,
 		"Origin":               "https://www.workbuddy.cn",
 		"Referer":              "https://www.workbuddy.cn/",
 		"X-No-Authorization":   "true",
@@ -73,7 +73,7 @@ func TestDecorateDesktopAuthURLPreservesBrowserQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.Query().Get("state") != "s" || u.Query().Get("version") != "5.3.14" {
+	if u.Query().Get("state") != "s" || u.Query().Get("version") != loginVersionCN {
 		t.Fatalf("query = %v", u.Query())
 	}
 }
@@ -101,7 +101,7 @@ func TestDesktopLoginKeepsStartProfileAndSessionAcrossReconfigure(t *testing.T) 
 			resp.Header.Set("Set-Cookie", "oauth-session=desktop; Path=/")
 			return resp, nil
 		case "/v2/plugin/auth/token":
-			return testHTTPResponse(req, `{"code":0,"data":{"accessToken":"access","refreshToken":"refresh","expiresIn":3600}}`), nil
+			return testHTTPResponse(req, `{"code":0,"data":{"accessToken":"access","refreshToken":"refresh","expiresIn":3600,"domain":"www.codebuddy.cn"}}`), nil
 		case "/v2/plugin/login/account":
 			return testHTTPResponse(req, `{"code":0,"data":{"uid":"desktop-user"}}`), nil
 		default:
@@ -128,7 +128,7 @@ func TestDesktopLoginKeepsStartProfileAndSessionAcrossReconfigure(t *testing.T) 
 	}
 	// The browser URL must match what upstream returned plus the client version:
 	// no invented loginSessionId (see the panel test for why).
-	if browserURL.Query().Get("state") != "original" || browserURL.Query().Get("version") != "5.3.14" {
+	if browserURL.Query().Get("state") != "original" || browserURL.Query().Get("version") != loginVersionCN {
 		t.Fatalf("desktop browser URL = %q", start.URL)
 	}
 	if got := browserURL.Query().Get("loginSessionId"); got != "" {
@@ -157,7 +157,7 @@ func TestDesktopLoginKeepsStartProfileAndSessionAcrossReconfigure(t *testing.T) 
 		t.Fatalf("OAuth requests = %d, want 3", len(requests))
 	}
 	for _, req := range requests {
-		if got := req.Header.Get("User-Agent"); got != "WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0" {
+		if got := req.Header.Get("User-Agent"); got != workBuddyDesktopUACN {
 			t.Errorf("%s User-Agent = %q", req.URL.Path, got)
 		}
 		if got := req.Header.Get("Origin"); got != "https://www.workbuddy.cn" {
@@ -211,7 +211,8 @@ func TestRefreshCallUsesDesktopProfile(t *testing.T) {
 	t.Cleanup(func() { proxyState.Store(oldProxy) })
 
 	sa := &storedAuth{
-		Auth:    storedTokens{RefreshToken: "refresh-secret"},
+		Auth: storedTokens{RefreshToken: "refresh-secret", Domain: "www.codebuddy.cn",
+			ClientMode: oauthClientModeWorkBuddy},
 		Account: storedAccount{UID: "user-1", EnterpriseID: "enterprise-1"},
 	}
 	if _, _, _, err := refreshCall(sa); err != nil {
@@ -224,7 +225,7 @@ func TestRefreshCallUsesDesktopProfile(t *testing.T) {
 		t.Fatalf("refresh request = %s %s", got.Method, got.URL)
 	}
 	for key, want := range map[string]string{
-		"User-Agent":            "WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0",
+		"User-Agent":            workBuddyDesktopUACN,
 		"Origin":                "https://www.workbuddy.cn",
 		"Referer":               "https://www.workbuddy.cn/",
 		"X-No-Authorization":    "true",

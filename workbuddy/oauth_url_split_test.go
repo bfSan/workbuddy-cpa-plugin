@@ -147,7 +147,7 @@ func TestOAuthStartReturnsURLParts(t *testing.T) {
 	if !ok {
 		t.Fatalf("query is %T, want map[string]string", res["query"])
 	}
-	if params["state"] != "s1" || params["platform"] != "workbuddy-ai" || params["version"] != "5.7.6" {
+	if params["state"] != "s1" || params["platform"] != "workbuddy-ai" || params["version"] != loginVersionGlobal {
 		t.Errorf("query = %v, want state/platform/version", params)
 	}
 	if got, _ := res["state"].(string); got != "s1" {

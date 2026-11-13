@@ -21,6 +21,7 @@ var errFutureModelCacheSchema = errors.New("future model cache schema")
 type modelAuthIdentity struct {
 	Provider     string         `json:"provider"`
 	Realm        workBuddyRealm `json:"realm"`
+	ClientMode   string         `json:"client_mode"`
 	UID          string         `json:"uid,omitempty"`
 	EnterpriseID string         `json:"enterprise_id,omitempty"`
 	AuthID       string         `json:"auth_id,omitempty"`
@@ -68,6 +69,7 @@ func modelAuthIdentityFor(authID string, sa *storedAuth) (modelAuthIdentity, err
 	identity := modelAuthIdentity{
 		Provider:     providerName,
 		Realm:        realm,
+		ClientMode:   wireProfileForStoredAuth(sa).Mode,
 		UID:          strings.TrimSpace(sa.Account.UID),
 		EnterpriseID: strings.TrimSpace(sa.Account.EnterpriseID),
 	}
@@ -82,6 +84,7 @@ func modelAuthIdentityFor(authID string, sa *storedAuth) (modelAuthIdentity, err
 
 func (i modelAuthIdentity) sha256() string {
 	i.Provider = strings.TrimSpace(i.Provider)
+	i.ClientMode = strings.ToLower(strings.TrimSpace(i.ClientMode))
 	i.UID = strings.TrimSpace(i.UID)
 	i.EnterpriseID = strings.TrimSpace(i.EnterpriseID)
 	if i.UID == "" {

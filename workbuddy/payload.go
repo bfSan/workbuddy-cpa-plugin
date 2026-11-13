@@ -11,24 +11,37 @@ import (
 	"strings"
 )
 
+// preparedUpstreamRequest carries the final wire body and the request-local
+// tool-name aliases needed to restore upstream tool calls for the caller.
+type preparedUpstreamRequest struct {
+	Body      []byte
+	ToolNames toolNameMapping
+}
+
 // forceStreamBody returns the request body with "stream":true set, since the
 // upstream rejects non-streaming chat requests.
-// prepareUpstreamBody composes forceStreamBody + normalizeToolsForUpstream +
-// rewriteModelInBody + rewriteSystemForUpstream + ensureSystemMessage into a
-// single unmarshal/marshal pass (v0.6.31 perf: was 4-5 full JSON round-trips
-// on every chat completion). The 4 legacy helpers remain for tests and other
-// call sites that need them individually.
+// prepareUpstreamBody is the compatibility wrapper used by focused tests and
+// legacy call sites. Executors use prepareUpstreamRequest so response handling
+// can restore any safe tool aliases generated for this request.
 func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel string) []byte {
+	return prepareUpstreamRequest(payload, original, sa, upstreamModel).Body
+}
+
+// prepareUpstreamRequest composes all WorkBuddy wire adaptations in one
+// unmarshal/marshal pass. It intentionally keeps the caller's system prompt and
+// tool semantics; only gateway-incompatible shapes and known channel markers
+// are rewritten.
+func prepareUpstreamRequest(payload, original []byte, sa *storedAuth, upstreamModel string) preparedUpstreamRequest {
 	src := payload
 	if len(src) == 0 {
 		src = original
 	}
 	if len(src) == 0 {
-		return src
+		return preparedUpstreamRequest{Body: src}
 	}
 	var obj map[string]any
 	if json.Unmarshal(src, &obj) != nil {
-		return src
+		return preparedUpstreamRequest{Body: src}
 	}
 
 	// 0. Restore the caller's explicit reasoning effort. CPA v8's Responses →
@@ -37,39 +50,88 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 	// only reads the top-level reasoning_effort/reasoning_summary pair.
 	restoreReasoningEffortInPlace(obj, original)
 
-	// 1. forceStream: CodeBuddy rejects non-stream requests.
+	// 1. CodeBuddy rejects non-stream requests. It also understands max_tokens,
+	// not the newer max_completion_tokens spelling.
 	obj["stream"] = true
+	normalizeMaxCompletionTokensInPlace(obj)
 
-	// 2. normalizeTools: tool_choice object form → string; "none" suppresses tools.
+	// 2. Normalize tool_choice before safe aliases are generated; fitToolsInPlace
+	// then rewrites a selected original tool name to its upstream alias.
 	normalizeToolsInPlace(obj)
 
-	// 3. rewriteModel: swap client model name to upstream model id.
+	// 3. Swap the client-facing model alias to the upstream model id.
 	rewriteModelInPlace(obj, upstreamModel)
 
-	// 4. role/shape normalization: developer → system and a guaranteed leading
-	// system message. Required since host v8.0.61 preserves the OpenAI Responses
-	// "developer" role; the WorkBuddy chat gateway rejects it with 400/11128.
+	// 4. The gateway accepts only system as the privileged role and requires it
+	// at the front. Preserve content while fixing role and position.
 	normalizeSystemFirstInPlace(obj)
 
-	// 4b. channel fingerprint neutralization: the gateway also content-matches
-	// harness identity / file-reference phrases inside privileged messages and
-	// returns the same 400/11128 even with a valid system role.
+	// 4b. Neutralize only the channel fingerprints confirmed by real DSH A/B
+	// tests. Do not replace the complete system prompt with a generic sentence.
 	neutralizeChannelFingerprintsInPlace(obj)
 
-	// 5. system sanitization: strip blocked Claude Code template phrases.
+	// 5. Keep the historical Claude-template sanitation and optional configured
+	// desensitization, both scoped to fields the plugin already owns.
 	rewriteSystemInPlace(obj)
-
-	// 5. desensitize the configured prompt and tool metadata fields.
 	applyDesensitizeInPlace(obj, currentFeatureRuntime())
 
-	// 6. ensureSystemMessage: inject minimal system msg for Global only.
+	// 6. Global requires a system message; CN tolerates the normalized shape.
 	ensureSystemMessageInPlace(obj, sa)
+
+	// 7. Repair tool→user turn boundaries rejected by Gemini-family models, then
+	// fit the narrower WorkBuddy function-name and JSON-Schema dialect.
+	alignWorkBuddyTurnOrderInPlace(obj)
+	toolNames := fitToolsInPlace(obj)
 
 	out, err := json.Marshal(obj)
 	if err != nil {
-		return src
+		return preparedUpstreamRequest{Body: src}
 	}
-	return out
+	return preparedUpstreamRequest{Body: out, ToolNames: toolNames}
+}
+
+func normalizeMaxCompletionTokensInPlace(obj map[string]any) bool {
+	value, present := obj["max_completion_tokens"]
+	if !present {
+		return false
+	}
+	if _, exists := obj["max_tokens"]; !exists {
+		obj["max_tokens"] = value
+	}
+	delete(obj, "max_completion_tokens")
+	return true
+}
+
+// alignWorkBuddyTurnOrderInPlace repairs the gateway-invalid tail
+// tool → user (or tool → user → user) by inserting an empty assistant turn at
+// the boundary. Other message order is left untouched.
+func alignWorkBuddyTurnOrderInPlace(obj map[string]any) bool {
+	messages, ok := obj["messages"].([]any)
+	if !ok || len(messages) < 2 {
+		return false
+	}
+	index := len(messages) - 1
+	for index >= 0 {
+		message, _ := messages[index].(map[string]any)
+		role, _ := message["role"].(string)
+		if !strings.EqualFold(role, "user") {
+			break
+		}
+		index--
+	}
+	if index < 0 || index == len(messages)-1 {
+		return false
+	}
+	message, _ := messages[index].(map[string]any)
+	role, _ := message["role"].(string)
+	if !strings.EqualFold(role, "tool") {
+		return false
+	}
+	messages = append(messages, nil)
+	copy(messages[index+2:], messages[index+1:])
+	messages[index+1] = map[string]any{"role": "assistant", "content": ""}
+	obj["messages"] = messages
+	return true
 }
 
 // normalizeToolsInPlace is the in-place form of normalizeToolsForUpstream.

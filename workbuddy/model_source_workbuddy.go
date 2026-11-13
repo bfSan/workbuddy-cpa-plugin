@@ -453,42 +453,6 @@ func firstNonEmptyModelDescription(values ...string) string {
 	return ""
 }
 
-// mergeModelCatalog unions two catalogs of the same account. The primary list
-// leads: its order and metadata win for an ID both carry, because it is the
-// view the desktop client itself sees. Entries that only the secondary list
-// has are appended with their own metadata, so neither identity's slice of the
-// catalogue is lost.
-func mergeModelCatalog(primary, secondary []modelFacts) []modelFacts {
-	if len(secondary) == 0 {
-		return primary
-	}
-	out := make([]modelFacts, 0, len(primary)+len(secondary))
-	seen := make(map[string]int, len(primary)+len(secondary))
-	for _, model := range primary {
-		id := strings.TrimSpace(model.ID)
-		if id == "" {
-			continue
-		}
-		seen[id] = len(out)
-		out = append(out, model)
-	}
-	for _, model := range secondary {
-		id := strings.TrimSpace(model.ID)
-		if id == "" {
-			continue
-		}
-		if index, exists := seen[id]; exists {
-			// The leading catalog already describes this model; only fill gaps
-			// it left blank rather than overwriting what it reported.
-			fillMissingModelFacts(&out[index], model)
-			continue
-		}
-		seen[id] = len(out)
-		out = append(out, model)
-	}
-	return out
-}
-
 // normalizeModelCredits keeps the upstream multiplier verbatim but bounded:
 // the field is display-only, so a hostile value must not bloat the catalog or
 // the cache. Upstream formats vary ("x0.29", "x2.20 credits", "x0.00").
@@ -658,26 +622,26 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 	if err != nil {
 		return workBuddyCatalog{}, &modelSourceError{Kind: modelSourceSchemaFailure, err: err}
 	}
+	if domainRealm, known := workBuddyRealmFromDomain(sa.Auth.Domain); known && domainRealm != realm {
+		return workBuddyCatalog{}, &modelSourceError{Kind: modelSourceSchemaFailure, err: fmt.Errorf("token issuer and auth domain disagree")}
+	}
 
 	base := upstreamBaseCN
-	origin := originReferer
 	if realm == workBuddyRealmGlobal {
 		base = upstreamBaseGlobal
-		origin = originRefererGlobal
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), modelSourceRequestTimeout)
 	defer cancel()
 
-	request := func(path, userAgent string) (*hostHTTPResponse, error) {
+	profile := catalogWireProfileForRealm(sa, realm)
+	request := func(path string, profile workBuddyWireProfile) (*hostHTTPResponse, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 		if err != nil {
 			return nil, &modelSourceError{Kind: modelSourceSchemaFailure, err: err}
 		}
 		backendHeaders(req, sa)
-		req.Header.Set("User-Agent", userAgent)
+		applyWireProfileHeaders(req, profile)
 		req.Header.Set("Accept", "application/json")
-		req.Header.Set("Origin", origin)
-		req.Header.Set("Referer", origin+"/")
 		resp, err := do(req, callbackID)
 		if err != nil {
 			return nil, &modelSourceError{Kind: modelSourceTransportFailure, err: err}
@@ -688,7 +652,7 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 		return resp, nil
 	}
 
-	resp, err := request("/v3/config", workBuddyDesktopUA)
+	resp, err := request("/v3/config", profile)
 	if err != nil {
 		return workBuddyCatalog{}, err
 	}
@@ -697,21 +661,10 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 		if err != nil {
 			return workBuddyCatalog{}, &modelSourceError{Kind: modelSourceSchemaFailure, err: err}
 		}
-		// Upstream serves a different slice of the catalog per client identity:
-		// the desktop list carries the fast/balanced/deep presets and the
-		// desktop default, while the CLI list carries the default model and a
-		// few entries the desktop list omits. Neither is a superset, so the
-		// served catalog is their union. The CLI fetch is best-effort: a failure
-		// there must not discard the desktop catalog that already parsed.
-		// The CLI fetch is best-effort: a failure there must not discard the
-		// desktop catalog that already parsed. Promotions are NOT taken from it
-		// either — the CLI identity is served a narrower payload that omits
-		// them, and merging an empty list would erase the desktop campaigns.
-		if cliResp, cliErr := request("/v3/config", clientUA); cliErr == nil && cliResp.StatusCode == http.StatusOK {
-			if cliModels, parseErr := parseWorkBuddyV3Config(cliResp.Body); parseErr == nil {
-				models = mergeModelCatalog(models, cliModels)
-			}
-		}
+		// Anti-fingerprint policy: one account uses one persisted client family.
+		// Do not replay the same token as desktop and CLI within milliseconds just
+		// to union identity-specific catalog slices; cached/static fallback handles
+		// temporary omissions without changing the account's wire identity.
 		// Campaigns are panel metadata. A malformed promotions block is logged
 		// and dropped; it must never fail a catalog that already parsed, or one
 		// upstream schema change would take the whole model list down with it.
@@ -731,7 +684,7 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 		return workBuddyCatalog{}, &modelSourceError{Kind: modelSourceHTTPFailure, StatusCode: resp.StatusCode}
 	}
 
-	resp, err = request("/console/enterprises/personal/models", clientUA)
+	resp, err = request("/console/enterprises/personal/models", profile)
 	if err != nil {
 		return workBuddyCatalog{}, err
 	}
@@ -743,6 +696,54 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 		return workBuddyCatalog{}, &modelSourceError{Kind: modelSourceSchemaFailure, err: err}
 	}
 	return workBuddyCatalog{Realm: realm, Endpoint: workBuddyEndpointLegacyPersonalModels, Models: models}, nil
+}
+
+func validateAndNormalizeStoredAuthRealm(sa *storedAuth) error {
+	if sa == nil {
+		return fmt.Errorf("stored auth is nil")
+	}
+	domainRealm, domainKnown := workBuddyRealmFromDomain(sa.Auth.Domain)
+	tokenRealm, tokenErr := workBuddyRealmFromAccessToken(sa.Auth.AccessToken)
+	if tokenErr == nil {
+		if domainKnown && domainRealm != tokenRealm {
+			return fmt.Errorf("token issuer and auth domain disagree")
+		}
+		if !domainKnown {
+			if tokenRealm == workBuddyRealmGlobal {
+				sa.Auth.Domain = "www.workbuddy.ai"
+			} else {
+				sa.Auth.Domain = "www.codebuddy.cn"
+			}
+		}
+		if tokenRealm == workBuddyRealmGlobal {
+			sa.Auth.ClientMode = oauthClientModeWorkBuddy
+		}
+		return nil
+	}
+	if len(strings.Split(sa.Auth.AccessToken, ".")) == 3 {
+		return fmt.Errorf("JWT-like access token has an invalid or unsupported issuer")
+	}
+	if !domainKnown {
+		return fmt.Errorf("opaque access token requires a recognized auth domain")
+	}
+	if domainRealm == workBuddyRealmGlobal {
+		sa.Auth.ClientMode = oauthClientModeWorkBuddy
+	}
+	return nil
+}
+
+func workBuddyRealmFromDomain(domain string) (workBuddyRealm, bool) {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" {
+		return "", false
+	}
+	if isGlobalDomain(domain) {
+		return workBuddyRealmGlobal, true
+	}
+	if domain == "codebuddy.cn" || strings.HasSuffix(domain, ".codebuddy.cn") || domain == "copilot.tencent.com" || strings.HasSuffix(domain, ".copilot.tencent.com") {
+		return workBuddyRealmCN, true
+	}
+	return "", false
 }
 
 // workBuddyRealmFromAccessToken decodes unverified JWT routing facts only.
@@ -762,8 +763,8 @@ func workBuddyRealmFromAccessToken(accessToken string) (workBuddyRealm, error) {
 		return "", fmt.Errorf("decode JWT claims: %w", err)
 	}
 	issuer, err := url.Parse(claims.Issuer)
-	if err != nil || !issuer.IsAbs() || issuer.Hostname() == "" {
-		return "", fmt.Errorf("JWT issuer is not an absolute URL")
+	if err != nil || !issuer.IsAbs() || !strings.EqualFold(issuer.Scheme, "https") || issuer.Hostname() == "" || issuer.User != nil || issuer.Port() != "" {
+		return "", fmt.Errorf("JWT issuer is not an approved HTTPS origin")
 	}
 	switch strings.ToLower(issuer.Hostname()) {
 	case "codebuddy.cn", "www.codebuddy.cn", "copilot.tencent.com":

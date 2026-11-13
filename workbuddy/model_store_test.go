@@ -71,6 +71,28 @@ func TestModelAuthIdentityHashChangesWithRealmAndEnterprise(t *testing.T) {
 	}
 }
 
+func TestModelAuthIdentityHashChangesWithClientMode(t *testing.T) {
+	cli := syntheticStoredAuth(t, workBuddyRealmCN)
+	cli.Auth.ClientMode = oauthClientModeCLI
+	desktop := *cli
+	desktop.Auth = cli.Auth
+	desktop.Auth.ClientMode = oauthClientModeWorkBuddy
+	cliIdentity, err := modelAuthIdentityFor("auth-1", cli)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktopIdentity, err := modelAuthIdentityFor("auth-1", &desktop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cliIdentity.ClientMode != oauthClientModeCLI || desktopIdentity.ClientMode != oauthClientModeWorkBuddy {
+		t.Fatalf("client modes = %q / %q", cliIdentity.ClientMode, desktopIdentity.ClientMode)
+	}
+	if cliIdentity.sha256() == desktopIdentity.sha256() {
+		t.Fatal("client mode change did not change catalog cache identity")
+	}
+}
+
 func TestModelAuthIdentityHashIsLowercaseSHA256Filename(t *testing.T) {
 	identity, err := modelAuthIdentityFor("auth-1", syntheticStoredAuth(t, workBuddyRealmCN))
 	if err != nil {

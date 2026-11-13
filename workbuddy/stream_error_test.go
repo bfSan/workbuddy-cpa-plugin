@@ -154,7 +154,7 @@ func TestAuthParseKeepsKnownCredits(t *testing.T) {
 		"type":    providerName,
 		"note":    "CN · 余940 已用3079 池4019",
 		"account": map[string]any{"uid": "uid-parse-wb", "nickname": "tester"},
-		"auth":    map[string]any{"accessToken": "tok"},
+		"auth":    map[string]any{"accessToken": "tok", "domain": "www.codebuddy.cn"},
 	})
 	if err != nil {
 		t.Fatalf("marshal file: %v", err)
@@ -295,6 +295,6 @@ func executorTestRequest() pluginapi.ExecutorRequest {
 	return pluginapi.ExecutorRequest{
 		Model:       "test-model",
 		Payload:     []byte(`{"messages":[]}`),
-		StorageJSON: mustJSON(&storedAuth{Auth: storedTokens{AccessToken: "access-token"}}),
+		StorageJSON: mustJSON(&storedAuth{Auth: storedTokens{AccessToken: "access-token", Domain: "www.codebuddy.cn"}}),
 	}
 }

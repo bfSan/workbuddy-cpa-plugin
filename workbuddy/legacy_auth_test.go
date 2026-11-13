@@ -14,7 +14,7 @@ func TestIsWorkbuddyAuthListNameIncludesLegacy(t *testing.T) {
 }
 
 func TestShouldDeleteLegacyForUIDRequiresMatchingUID(t *testing.T) {
-	legacyA := []byte(`{"auth":{"accessToken":"a"},"account":{"uid":"A"}}`)
+	legacyA := []byte(`{"auth":{"accessToken":"a","domain":"www.codebuddy.cn"},"account":{"uid":"A"}}`)
 	if shouldDeleteLegacyForUID(legacyA, "B") {
 		t.Fatal("must not delete legacy workbuddy.json for a different uid")
 	}

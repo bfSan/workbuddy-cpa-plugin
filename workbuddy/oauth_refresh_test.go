@@ -71,7 +71,7 @@ func TestHandlePollLoginDeletesStateAfterAccountFailure(t *testing.T) {
 }
 
 func TestBuildLoginAuthRejectsMissingAccountUID(t *testing.T) {
-	_, err := buildLoginStoredAuth(tokenData{AccessToken: "at", RefreshToken: "rt", ExpiresIn: 3600}, accountData{})
+	_, err := buildLoginStoredAuth(tokenData{AccessToken: "at", RefreshToken: "rt", ExpiresIn: 3600}, accountData{}, oauthClientModeCLI)
 	if err == nil || !strings.Contains(err.Error(), "account") {
 		t.Fatalf("expected account identity error, got %v", err)
 	}
@@ -88,7 +88,8 @@ func TestExpiryFromExpiresInPreservesOldWhenMissing(t *testing.T) {
 func TestBuildRefreshedAuthJSONPreservesTopLevelMetadata(t *testing.T) {
 	phys := []byte(`{"type":"workbuddy","provider":"workbuddy","logo":"old-logo","disabled":true,"note":"keep me","auth":{"accessToken":"old","refreshToken":"rt","expiresAt":999},"account":{"uid":"u1","nickname":"nick"}}`)
 	sa := &storedAuth{
-		Auth:    storedTokens{AccessToken: "new", RefreshToken: "new-rt", ExpiresAt: 1234},
+		Auth: storedTokens{AccessToken: "new", RefreshToken: "new-rt", ExpiresAt: 1234,
+			Domain: "www.codebuddy.cn", ClientMode: oauthClientModeWorkBuddy},
 		Account: storedAccount{UID: "u1", Nickname: "nick"},
 	}
 	raw, err := buildRefreshedAuthJSON(phys, sa)
@@ -107,7 +108,11 @@ func TestBuildRefreshedAuthJSONPreservesTopLevelMetadata(t *testing.T) {
 	if doc["disabled"] != true || doc["note"] != "keep me" {
 		t.Fatalf("metadata not preserved: %s", raw)
 	}
-	if _, ok := doc["auth"]; !ok {
+	auth, ok := doc["auth"].(map[string]any)
+	if !ok {
 		t.Fatalf("missing refreshed auth: %s", raw)
+	}
+	if auth["clientMode"] != oauthClientModeWorkBuddy || auth["domain"] != "www.codebuddy.cn" {
+		t.Fatalf("refreshed profile metadata lost: %s", raw)
 	}
 }

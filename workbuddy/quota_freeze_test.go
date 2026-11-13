@@ -325,7 +325,7 @@ func TestQuotaExecutorHTTPGuardsOnlyExactChat(t *testing.T) {
 	installModelStatesForTest(t, map[string]modelReadinessState{id: modelReady})
 	calls := 0
 	quotaHTTPClient(t, 200, `{}`, &calls)
-	sa := &storedAuth{Auth: storedTokens{AccessToken: "test-only"}}
+	sa := &storedAuth{Auth: storedTokens{AccessToken: "test-only", Domain: "www.codebuddy.cn"}}
 	request := pluginapi.ExecutorHTTPRequest{AuthID: id, Method: http.MethodPost, URL: endpointChatFor(sa), StorageJSON: mustJSON(sa), Body: []byte(`{"model":"m"}`)}
 	invoke := func(req pluginapi.ExecutorHTTPRequest) envelope {
 		t.Helper()
@@ -374,7 +374,7 @@ func TestQuotaExecutorHTTPRecordsBusinessErrors(t *testing.T) {
 				body = "data: " + body + "\n\n"
 			}
 			quotaHTTPClient(t, status, body, &calls)
-			sa := &storedAuth{Auth: storedTokens{AccessToken: "test-only"}}
+			sa := &storedAuth{Auth: storedTokens{AccessToken: "test-only", Domain: "www.codebuddy.cn"}}
 			request := pluginapi.ExecutorHTTPRequest{AuthID: id, Method: http.MethodPost, URL: endpointChatFor(sa), StorageJSON: mustJSON(sa), Body: []byte(`{"model":"m"}`)}
 			raw, err := handleExecHTTPRequest(mustJSON(request))
 			if err != nil {

@@ -36,9 +36,16 @@ func TestOAuthProfileUsesCorrectRealmPerRegion(t *testing.T) {
 	if cn.stateURL == global.stateURL || cn.origin == global.origin {
 		t.Error("the two realms must not collapse onto the same login endpoint")
 	}
-	// The desktop UA is a client identity, not a realm marker: it stays the same.
-	if cn.userAgent != global.userAgent {
-		t.Error("user agent must not change by region; it identifies the client, not the realm")
+	// The installed CN and Global applications are distinct bundle IDs and
+	// versions. Each realm must advertise its own real application version.
+	if cn.userAgent != workBuddyDesktopUACN {
+		t.Errorf("CN user agent = %q, want %q", cn.userAgent, workBuddyDesktopUACN)
+	}
+	if global.userAgent != workBuddyDesktopUAGlobal {
+		t.Errorf("Global user agent = %q, want %q", global.userAgent, workBuddyDesktopUAGlobal)
+	}
+	if cn.userAgent == global.userAgent {
+		t.Error("CN and Global applications unexpectedly share one version identity")
 	}
 }
 
@@ -179,8 +186,8 @@ func TestCLIProfileKeepsHistoricalEndpoints(t *testing.T) {
 // account was captured.
 //
 // Verified against the live upstream 2026-10-08: the two platform values produce
-// different authUrls, and only platform=workbuddy-ai with client 5.7.6 reaches
-// the Global sign-in branch.
+// different authUrls. The version pin now follows the installed realm-specific
+// macOS application (5.9.3 CN / 5.9.4 Global, read 2026-11-13).
 func TestGlobalLoginUsesTheInternationalSurface(t *testing.T) {
 	cn := oauthProfileForModeRegion(oauthClientModeWorkBuddy, oauthLoginRegionCN)
 	if cn.platform != loginPlatformCN || cn.clientVersion != loginVersionCN {

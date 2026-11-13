@@ -96,7 +96,7 @@ func pollOAuthPending(state string, panel bool) (pluginapi.AuthLoginPollResponse
 		if json.Unmarshal(raw, &account) != nil {
 			return response, persistent, lc.expires, oauthLoginFailure("account lookup parse failed", 0)
 		}
-		sa, err := buildLoginStoredAuth(*lc.token, account)
+		sa, err := buildLoginStoredAuth(*lc.token, account, lc.profile.mode)
 		if err != nil {
 			return response, persistent, lc.expires, err
 		}

@@ -36,6 +36,10 @@ func emptyStreamError() error {
 	return fmt.Errorf("empty upstream stream (unexpected EOF)")
 }
 
+func truncatedToolNameError() error {
+	return fmt.Errorf("upstream stream ended with an incomplete tool name (unexpected EOF)")
+}
+
 // upstreamReadError renders a mid-stream read failure with the same
 // transport-lifecycle classification.
 func upstreamReadError(err error) error {
@@ -126,7 +130,12 @@ func streamHeaders() http.Header {
 // the outbound call and host transport policy applies. The host bridge emits
 // arbitrary 32KB chunks, so we adapt to io.Reader and keep the bufio.Scanner
 // SSE line framing unchanged.
-func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID string, callbackID string) {
+func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID string, callbackID string, toolMappings ...toolNameMapping) {
+	var toolNames toolNameMapping
+	if len(toolMappings) > 0 {
+		toolNames = toolMappings[0]
+	}
+	nameRestorer := newStreamToolNameRestorer(toolNames)
 	// Always close the host stream exactly once on every exit path.
 	closed := false
 	closeOnce := func() {
@@ -173,6 +182,13 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			continue
 		}
 		if content == "[DONE]" {
+			if nameRestorer.hasPending() {
+				errTruncated := truncatedToolNameError()
+				publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, errTruncated.Error())
+				recordUpstreamFailure(authID, upstreamModel, 0, errTruncated.Error())
+				streamEmitError(streamID, errTruncated.Error())
+				return
+			}
 			break
 		}
 		if fault := chatStreamFrameError(content); fault != nil {
@@ -182,7 +198,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 			return
 		}
 		collector.feed(content)
-		cleaned := cleanChunkJSON(content)
+		cleaned := cleanChunkJSONWithRestorer(content, nameRestorer)
 		if cleaned == "" || !json.Valid([]byte(cleaned)) {
 			continue
 		}
@@ -205,6 +221,13 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		streamEmitError(streamID, readErr.Error())
 		return
 	}
+	if nameRestorer.hasPending() {
+		errTruncated := truncatedToolNameError()
+		publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, errTruncated.Error())
+		recordUpstreamFailure(authID, upstreamModel, 0, errTruncated.Error())
+		streamEmitError(streamID, errTruncated.Error())
+		return
+	}
 	if validEvents == 0 {
 		errEmpty := emptyStreamError()
 		publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, errEmpty.Error())
@@ -221,11 +244,15 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 // non-nil, observes raw upstream chunks for usage extraction. statusCode is the
 // upstream HTTP status (0 for transport-level failures).
 func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector, callbackID string, authID, upstreamModel string) ([]pluginapi.ExecutorStreamChunk, int, error) {
+	return collectUpstreamStreamWithIdentity(body, sa, sseFramed, collector, callbackID, authID, upstreamModel, nil, nil, toolNameMapping{})
+}
+
+func collectUpstreamStreamWithIdentity(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector, callbackID string, authID, upstreamModel string, metadata map[string]any, inbound http.Header, toolNames toolNameMapping) ([]pluginapi.ExecutorStreamChunk, int, error) {
 	httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
 	}
-	backendHeaders(httpReq, sa)
+	backendChatHeaders(httpReq, sa, body, metadata, inbound)
 	// Compliance: route via host.http.do_stream so request-log captures the call.
 	if blocked := quotaFreezeError(authID, upstreamModel); blocked != nil {
 		return nil, 0, blocked
@@ -244,9 +271,9 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 		}
 		return nil, statusCode, chatUpstreamError(statusCode, string(errPayload))
 	}
-	chunks, errAgg := aggregateSSEObserved(reader, sseFramed, collector, func(content string) {
+	chunks, errAgg := aggregateSSEObservedWithTools(reader, sseFramed, collector, func(content string) {
 		recordUpstreamFailureWithHeaders(authID, upstreamModel, http.StatusOK, content, responseHeaders)
-	})
+	}, toolNames)
 	if errAgg != nil {
 		return chunks, statusCode, errAgg
 	}
@@ -283,6 +310,11 @@ func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageC
 }
 
 func aggregateSSEObserved(r io.Reader, sseFramed bool, collector *sseUsageCollector, observeFailure func(string)) ([]pluginapi.ExecutorStreamChunk, error) {
+	return aggregateSSEObservedWithTools(r, sseFramed, collector, observeFailure, toolNameMapping{})
+}
+
+func aggregateSSEObservedWithTools(r io.Reader, sseFramed bool, collector *sseUsageCollector, observeFailure func(string), toolNames toolNameMapping) ([]pluginapi.ExecutorStreamChunk, error) {
+	nameRestorer := newStreamToolNameRestorer(toolNames)
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	var chunks []pluginapi.ExecutorStreamChunk
@@ -293,6 +325,9 @@ func aggregateSSEObserved(r io.Reader, sseFramed bool, collector *sseUsageCollec
 			continue
 		}
 		if content == "[DONE]" {
+			if nameRestorer.hasPending() {
+				return chunks, truncatedToolNameError()
+			}
 			break
 		}
 		if fault := chatStreamFrameError(content); fault != nil {
@@ -304,7 +339,7 @@ func aggregateSSEObserved(r io.Reader, sseFramed bool, collector *sseUsageCollec
 		if collector != nil {
 			collector.feed(content)
 		}
-		cleaned := cleanChunkJSON(content)
+		cleaned := cleanChunkJSONWithRestorer(content, nameRestorer)
 		if cleaned == "" || !json.Valid([]byte(cleaned)) {
 			continue
 		}
@@ -316,6 +351,9 @@ func aggregateSSEObserved(r io.Reader, sseFramed bool, collector *sseUsageCollec
 	}
 	if err := scanner.Err(); err != nil {
 		return chunks, upstreamReadError(err)
+	}
+	if nameRestorer.hasPending() {
+		return chunks, truncatedToolNameError()
 	}
 	if validEvents == 0 {
 		return chunks, emptyStreamError()
@@ -330,6 +368,10 @@ func aggregateSSEObserved(r io.Reader, sseFramed bool, collector *sseUsageCollec
 // content:"" is a valid delta (pure tool-call chunk) and the role-only first
 // chunk must survive so clients can establish the message role.
 func cleanChunkJSON(s string) string {
+	return cleanChunkJSONWithRestorer(s, nil)
+}
+
+func cleanChunkJSONWithRestorer(s string, nameRestorer *streamToolNameRestorer) string {
 	var obj map[string]any
 	if json.Unmarshal([]byte(s), &obj) != nil {
 		return s
@@ -374,6 +416,9 @@ func cleanChunkJSON(s string) string {
 			}
 		}
 	}
+	if nameRestorer != nil && nameRestorer.restoreChunk(obj) {
+		changed = true
+	}
 	if !changed {
 		return s
 	}
@@ -388,15 +433,23 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 	return aggregateCompletionObserved(r, model, nil)
 }
 
-// aggregateCompletionWithQuota is the non-stream executor hook. The upstream
-// still speaks SSE; business error frames must freeze before returning failure.
+// aggregateCompletionWithQuota is the compatibility wrapper for tests and old
+// call sites that do not need request-local tool aliases restored.
 func aggregateCompletionWithQuota(r io.Reader, model, authID, upstreamModel string, headers http.Header) ([]byte, error) {
-	return aggregateCompletionObserved(r, model, func(content string) {
+	return aggregateCompletionWithQuotaAndTools(r, model, authID, upstreamModel, headers, toolNameMapping{})
+}
+
+func aggregateCompletionWithQuotaAndTools(r io.Reader, model, authID, upstreamModel string, headers http.Header, toolNames toolNameMapping) ([]byte, error) {
+	return aggregateCompletionObservedWithTools(r, model, func(content string) {
 		recordUpstreamFailureWithHeaders(authID, upstreamModel, http.StatusOK, content, headers)
-	})
+	}, toolNames)
 }
 
 func aggregateCompletionObserved(r io.Reader, model string, observeFailure func(string)) ([]byte, error) {
+	return aggregateCompletionObservedWithTools(r, model, observeFailure, toolNameMapping{})
+}
+
+func aggregateCompletionObservedWithTools(r io.Reader, model string, observeFailure func(string), toolNames toolNameMapping) ([]byte, error) {
 	var content, reasoning, role, respModel, respID, finish string
 	var created int64
 	var usage map[string]any
@@ -406,6 +459,7 @@ func aggregateCompletionObserved(r io.Reader, model string, observeFailure func(
 	// so the folded completion holds whole calls.
 	toolCalls := map[int]map[string]any{}
 	var toolOrder []int
+	var legacyFunctionCall map[string]any
 	var scanErr error
 	sawChoice := false
 
@@ -476,6 +530,17 @@ func aggregateCompletionObserved(r io.Reader, model string, observeFailure func(
 						mergeToolCallDelta(merged, call)
 					}
 				}
+				if legacy, ok := delta["function_call"].(map[string]any); ok {
+					if legacyFunctionCall == nil {
+						legacyFunctionCall = make(map[string]any)
+					}
+					for _, field := range []string{"name", "arguments"} {
+						if fragment, ok := legacy[field].(string); ok {
+							prior, _ := legacyFunctionCall[field].(string)
+							legacyFunctionCall[field] = prior + fragment
+						}
+					}
+				}
 			}
 			if v, ok := choice["finish_reason"].(string); ok && v != "" {
 				finish = v
@@ -495,6 +560,9 @@ func aggregateCompletionObserved(r io.Reader, model string, observeFailure func(
 	if !sawChoice {
 		return nil, emptyStreamError()
 	}
+	if (finish == "tool_calls" && len(toolOrder) == 0) || (finish == "function_call" && legacyFunctionCall == nil) {
+		return nil, truncatedToolNameError()
+	}
 
 	message := map[string]any{"role": firstNonEmpty(role, "assistant"), "content": content}
 	if reasoning != "" {
@@ -504,9 +572,29 @@ func aggregateCompletionObserved(r io.Reader, model string, observeFailure func(
 		sort.Ints(toolOrder)
 		calls := make([]map[string]any, 0, len(toolOrder))
 		for _, idx := range toolOrder {
-			calls = append(calls, toolCalls[idx])
+			call := toolCalls[idx]
+			if !toolNames.empty() {
+				fn, ok := call["function"].(map[string]any)
+				name, nameOK := fn["name"].(string)
+				if !ok || !nameOK || !toolNames.knownExact(name) {
+					return nil, truncatedToolNameError()
+				}
+			}
+			restoreToolNamesInObject(call, toolNames)
+			calls = append(calls, call)
 		}
 		message["tool_calls"] = calls
+	}
+	if legacyFunctionCall != nil {
+		if !toolNames.empty() {
+			name, ok := legacyFunctionCall["name"].(string)
+			if !ok || !toolNames.knownExact(name) {
+				return nil, truncatedToolNameError()
+			}
+		}
+		wrapper := map[string]any{"function_call": legacyFunctionCall}
+		restoreToolNamesInObject(wrapper, toolNames)
+		message["function_call"] = legacyFunctionCall
 	}
 	if created == 0 {
 		created = time.Now().Unix()

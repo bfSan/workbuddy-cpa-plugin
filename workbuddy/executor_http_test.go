@@ -28,14 +28,23 @@ func TestExecutorHTTPRequestForwardsAllowedUpstream(t *testing.T) {
 		}, nil
 	})}
 	storage := mustJSON(&storedAuth{
-		Auth:    storedTokens{AccessToken: "access-token"},
+		Auth:    storedTokens{AccessToken: "access-token", Domain: "www.codebuddy.cn"},
 		Account: storedAccount{UID: "uid-1"},
 	})
 	raw, err := handleMethod(pluginabi.MethodExecutorHTTPRequest, mustJSON(pluginapi.ExecutorHTTPRequest{
-		AuthID:      authID,
-		Method:      http.MethodPost,
-		URL:         upstreamBaseCN + "/v2/plugin/ping",
-		Headers:     http.Header{"Content-Type": []string{"application/json"}},
+		AuthID: authID,
+		Method: http.MethodPost,
+		URL:    upstreamBaseCN + "/v2/plugin/ping",
+		Headers: http.Header{
+			"Content-Type":           []string{"application/json"},
+			"Authorization":          []string{"Bearer attacker"},
+			"X-Refresh-Token":        []string{"raw-refresh"},
+			"X-DSH-Session-ID":       []string{"raw-session"},
+			"X-Conversation-ID":      []string{"raw-conversation"},
+			"X-IDE-Version":          []string{"0.0.0"},
+			"X-No-Authorization":     []string{"true"},
+			"OpenAI-Conversation-ID": []string{"raw-openai-session"},
+		},
 		Body:        []byte(`{"hello":"world"}`),
 		StorageJSON: storage,
 	}))
@@ -62,8 +71,13 @@ func TestExecutorHTTPRequestForwardsAllowedUpstream(t *testing.T) {
 	if got.Header.Get("Authorization") != "Bearer access-token" {
 		t.Fatalf("missing derived authorization: %q", got.Header.Get("Authorization"))
 	}
-	if got.Header.Get("X-Refresh-Token") != "" {
-		t.Fatal("refresh token must not be sent on executor HTTP requests")
+	for _, key := range []string{"X-Refresh-Token", "X-DSH-Session-ID", "X-Conversation-ID", "OpenAI-Conversation-ID", "X-No-Authorization"} {
+		if value := got.Header.Get(key); value != "" {
+			t.Fatalf("%s leaked on generic request: %q", key, value)
+		}
+	}
+	if value := got.Header.Get("X-IDE-Version"); value != codeBuddyCLIVersion {
+		t.Fatalf("canonical X-IDE-Version = %q", value)
 	}
 }
 
@@ -77,7 +91,7 @@ func TestExecutorHTTPRequestRejectsForeignHost(t *testing.T) {
 		called = true
 		return nil, nil
 	})}
-	storage := mustJSON(&storedAuth{Auth: storedTokens{AccessToken: "access-token"}})
+	storage := mustJSON(&storedAuth{Auth: storedTokens{AccessToken: "access-token", Domain: "www.codebuddy.cn"}})
 	_, err := handleMethod(pluginabi.MethodExecutorHTTPRequest, mustJSON(pluginapi.ExecutorHTTPRequest{
 		AuthID:      authID,
 		Method:      http.MethodGet,
@@ -441,8 +455,8 @@ func TestInboundHandlersForwardHostCallbackID(t *testing.T) {
 			file:      "main.go",
 			signature: "func handleExecStream(",
 			requirements: []string{
-				"collectUpstreamStream(body, sa, sseFramed, collector, req.HostCallbackID, req.AuthID, upstreamModel)",
-				"pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, req.HostCallbackID)",
+				"collectUpstreamStreamWithIdentity(body, sa, sseFramed, collector, req.HostCallbackID, req.AuthID, upstreamModel",
+				"pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, req.HostCallbackID,",
 			},
 		},
 		{

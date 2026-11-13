@@ -16,8 +16,12 @@
   宿主侧 `oauth-model-alias` / `oauth-excluded-models` 配置仍然生效。插件自身的
   `hidden_models` 是独立的插件级模型隐藏列表。
 - **执行器** — OpenAI 兼容 chat completions，流式（真 SSE，走 `host.stream.emit`）
-  和非流式（SSE 折叠成单个 completion）都支持。内置 `tool_choice` 归一、
-  Claude Code 模板清洗、按区域注入 system message。
+  和非流式（SSE 折叠成单个 completion）都支持。内置符合生命周期的
+  conversation/turn ID、深层 JSON Schema 修复、可逆工具名、tool→user 轮次修复、
+  `tool_choice` 归一、精确 channel 指纹中和及按区域注入 system message。
+- **客户端 profile 一致性** — OAuth、token refresh、模型目录和聊天共用同一份
+  realm/version 源；CN WorkBuddy、Global WorkBuddy AI、CodeBuddy CLI 的 UA、
+  `X-IDE-*`、Origin 不会在单个请求里混用，非聊天请求不带 conversation headers。
 - **配额冻结** — 按证据区分临时限流、模型调用额度和共享积分耗尽；仅冻结受影响范围，
   展示原因、下次探测时间及恢复条件。不因零余额删除账号，不自动解除人工禁用。
 - **每日签到** — CN 账号每天 09:00 和 21:00 自动签到（可配置）。面板可手动
@@ -31,6 +35,10 @@
   可配置的 CPAMP 端点。未配置 URL+key 时不上报。
 
 实现细节、持久化范围、平台限制及 API：[可靠性功能说明](docs/reliability.md)。
+客户端 wire 一致性、传输指纹边界和可选 sidecar 路线见
+[客户端一致性与传输指纹方案](docs/fingerprint-compatibility.md)。后续 `staged-scheduler`
+演进边界、session lease、sticky egress 与失败分类见
+[路由策略草案](docs/routing-strategy.md)；0.9.29 仅记录设计，未修改 scheduler。
 
 ## 快速开始
 

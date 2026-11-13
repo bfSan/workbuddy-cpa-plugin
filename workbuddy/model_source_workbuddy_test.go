@@ -318,6 +318,9 @@ func TestWorkBuddyRealmFromAccessTokenRejectsMalformedAndUnknownIssuers(t *testi
 		{name: "invalid JSON", token: header + "." + base64.RawURLEncoding.EncodeToString([]byte(`not json`)) + ".signature"},
 		{name: "missing issuer", token: header + "." + base64.RawURLEncoding.EncodeToString([]byte(`{}`)) + ".signature"},
 		{name: "issuer is not URL", token: syntheticAccessToken(t, "codebuddy.cn")},
+		{name: "issuer is not HTTPS", token: syntheticAccessToken(t, "http://codebuddy.cn/realms/cli")},
+		{name: "issuer has userinfo", token: syntheticAccessToken(t, "https://user@codebuddy.cn/realms/cli")},
+		{name: "issuer has port", token: syntheticAccessToken(t, "https://codebuddy.cn:444/realms/cli")},
 		{name: "unknown issuer", token: syntheticAccessToken(t, "https://unknown.example/realms/cli")},
 	}
 	for _, tt := range tests {
@@ -395,38 +398,39 @@ func TestFetchWorkBuddyCatalogRoutesByJWTRealm(t *testing.T) {
 			if !deadlineOK {
 				t.Fatal("request deadline is not approximately 15 seconds")
 			}
+			if len(headers) != 1 {
+				t.Fatalf("catalog requests = %d, want one persisted profile", len(headers))
+			}
+			profile := catalogWireProfileForRealm(sa, tt.realm)
+			header := headers[0]
 			wantHeaders := map[string]string{
 				"Authorization":   "Bearer " + sa.Auth.AccessToken,
 				"Accept":          "application/json",
-				"Origin":          tt.origin,
-				"Referer":         tt.origin + "/",
-				"User-Agent":      workBuddyDesktopUA,
+				"Origin":          profile.Origin,
+				"Referer":         profile.Origin + "/",
+				"User-Agent":      profile.UserAgent,
 				"X-User-Id":       "uid-1",
 				"X-Enterprise-Id": "enterprise-1",
+				"X-Tenant-Id":     "enterprise-1",
 				"X-Product":       "SaaS",
-				"X-IDE-Type":      "CLI",
-				"X-IDE-Name":      "CLI",
-				"X-IDE-Version":   "2.63.2",
-				"X-Agent-Intent":  "craft",
+				"X-IDE-Type":      profile.IDEType,
+				"X-IDE-Name":      profile.IDEName,
+				"X-IDE-Version":   profile.Version,
 			}
-			if len(headers) != 2 {
-				t.Fatalf("catalog requests = %d, want 2 identity-specific requests", len(headers))
-			}
-			if got := headers[0].Get("User-Agent"); got != workBuddyDesktopUA {
-				t.Fatalf("desktop catalog User-Agent = %q, want %q", got, workBuddyDesktopUA)
-			}
-			if got := headers[1].Get("User-Agent"); got != clientUA {
-				t.Fatalf("CLI catalog User-Agent = %q, want %q", got, clientUA)
-			}
-			for _, header := range headers {
-				for key, want := range wantHeaders {
-					if key == "User-Agent" {
-						continue
-					}
-					if value := header.Get(key); value != want {
-						t.Errorf("%s = %q, want %q", key, value, want)
-					}
+			for key, want := range wantHeaders {
+				if value := header.Get(key); value != want {
+					t.Errorf("%s = %q, want %q", key, value, want)
 				}
+			}
+			wantPrivate := ""
+			if profile.Mode == oauthClientModeWorkBuddy {
+				wantPrivate = "true"
+			}
+			if value := header.Get("X-Private-Data"); value != wantPrivate {
+				t.Errorf("X-Private-Data = %q, want %q", value, wantPrivate)
+			}
+			if value := header.Get("X-Agent-Intent"); value != "" {
+				t.Errorf("catalog carries chat intent %q", value)
 			}
 		})
 	}
@@ -459,7 +463,8 @@ func TestFetchWorkBuddyCatalogLegacyRequestPreservesRealmRouting(t *testing.T) {
 				}, nil
 			}
 
-			got, err := fetchWorkBuddyCatalog(syntheticStoredAuth(t, tt.realm), "callback-legacy", do)
+			sa := syntheticStoredAuth(t, tt.realm)
+			got, err := fetchWorkBuddyCatalog(sa, "callback-legacy", do)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -472,7 +477,8 @@ func TestFetchWorkBuddyCatalogLegacyRequestPreservesRealmRouting(t *testing.T) {
 			if callbacks[0] != "callback-legacy" || callbacks[1] != "callback-legacy" {
 				t.Fatalf("callback IDs = %#v", callbacks)
 			}
-			if legacyHeaders.Get("Accept") != "application/json" || legacyHeaders.Get("Origin") != tt.origin || legacyHeaders.Get("Referer") != tt.origin+"/" {
+			profile := catalogWireProfileForRealm(sa, tt.realm)
+			if legacyHeaders.Get("Accept") != "application/json" || legacyHeaders.Get("Origin") != profile.Origin || legacyHeaders.Get("Referer") != profile.Origin+"/" {
 				t.Fatalf("legacy headers = %#v", legacyHeaders)
 			}
 		})
@@ -622,10 +628,8 @@ func TestParseWorkBuddyV3ConfigServesPresetAsItself(t *testing.T) {
 	}
 }
 
-// Catalog discovery asks as both client identities, because upstream tiers the
-// catalog by User-Agent and neither list is a superset of the other. The
-// desktop request leads; the CLI request fills in its identity-specific slice.
-func TestFetchWorkBuddyCatalogUsesBothIdentities(t *testing.T) {
+// Catalog discovery must keep one account on its persisted client family.
+func TestFetchWorkBuddyCatalogUsesOnePersistedIdentity(t *testing.T) {
 	var sawUA []string
 	do := func(req *http.Request, _ string) (*hostHTTPResponse, error) {
 		sawUA = append(sawUA, req.Header.Get("User-Agent"))
@@ -636,64 +640,11 @@ func TestFetchWorkBuddyCatalogUsesBothIdentities(t *testing.T) {
 		}, nil
 	}
 	sa := syntheticStoredAuth(t, workBuddyRealmCN)
+	sa.Auth.ClientMode = oauthClientModeWorkBuddy
 	if _, err := fetchWorkBuddyCatalog(sa, "", do); err != nil {
 		t.Fatal(err)
 	}
-	if len(sawUA) == 0 {
-		t.Fatal("no request was made")
-	}
-	if len(sawUA) != 2 || sawUA[0] != workBuddyDesktopUA || sawUA[1] != clientUA {
-		t.Fatalf("catalog discovery User-Agents = %#v, want desktop then CLI", sawUA)
-	}
-}
-
-// mergeModelCatalog unions the two identity-specific slices of the catalog.
-// Neither is a superset: the desktop list has the presets, the CLI list has the
-// default model and a few entries the desktop list omits.
-func TestMergeModelCatalog_UnionsWithoutDuplicating(t *testing.T) {
-	primary := []modelFacts{
-		{ID: "preset-a", Name: "Preset", Credits: "x0.21"},
-		{ID: "shared", Name: "Desktop Name", Credits: "x0.21"},
-	}
-	secondary := []modelFacts{
-		{ID: "shared", Name: "CLI Name", Credits: "x9.99"},
-		{ID: "cli-only", Name: "CLI Only"},
-	}
-	got := mergeModelCatalog(primary, secondary)
-	if len(got) != 3 {
-		t.Fatalf("expected a 3-entry union, got %#v", got)
-	}
-	if got[0].ID != "preset-a" || got[1].ID != "shared" || got[2].ID != "cli-only" {
-		t.Fatalf("primary order must lead, got %#v", got)
-	}
-	// The leading catalog's metadata wins for a shared ID; blanks are filled.
-	if got[1].Name != "Desktop Name" {
-		t.Fatalf("primary metadata should win, got %#v", got[1])
-	}
-	if got[1].Credits != "x0.21" {
-		t.Fatalf("primary credits should be kept, got %#v", got[1])
-	}
-}
-
-// mergeModelCatalog must never produce a duplicate ID: validateModelFacts
-// rejects the whole snapshot on one, which would degrade the catalog.
-func TestMergeModelCatalog_FillsGapsWithoutDuplicates(t *testing.T) {
-	primary := []modelFacts{{ID: "shared"}}
-	secondary := []modelFacts{{ID: "shared", Name: "Filled", Credits: "x1.00"}}
-	got := mergeModelCatalog(primary, secondary)
-	if len(got) != 1 {
-		t.Fatalf("expected one merged entry, got %#v", got)
-	}
-	if got[0].Name != "Filled" || got[0].Credits != "x1.00" {
-		t.Fatalf("blank fields should be filled from the secondary list: %#v", got[0])
-	}
-}
-
-// An empty secondary list is the common case for a global account, and must be
-// a no-op rather than dropping the primary catalog.
-func TestMergeModelCatalog_EmptySecondaryIsNoop(t *testing.T) {
-	primary := []modelFacts{{ID: "serve-chat"}}
-	if got := mergeModelCatalog(primary, nil); len(got) != 1 || got[0].ID != "serve-chat" {
-		t.Fatalf("empty secondary must be a no-op, got %#v", got)
+	if len(sawUA) != 1 || sawUA[0] != workBuddyDesktopUACN {
+		t.Fatalf("catalog discovery User-Agents = %#v, want one persisted desktop profile", sawUA)
 	}
 }

@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.9.29 — 2026-11-13
+
+- Add one realm-aware WorkBuddy wire-profile source shared by OAuth, refresh,
+  catalog and chat. Pins follow the user's installed macOS applications
+  (`com.tencent.workbuddy.mac` 5.9.3 and `com.workbuddy.workbuddy-ai` 5.9.4);
+  the official CodeBuddy CLI fallback is pinned to 2.172.1. The desktop UA uses
+  the observed duplicated WorkBuddy builder but omits its optional CLI segment,
+  because the app's product `platformVersion` was not statically established.
+  Each auth now persists `clientMode`; Global is always WorkBuddy and legacy CN
+  deterministically remains CLI. A token is never replayed as both desktop and
+  CLI to union catalog slices. Recognized JWT issuer/auth-domain disagreement
+  fails closed. Read-only `app.asar` inspection additionally matches
+  `X-Tenant-Id`, `X-Private-Data`, `x-codebuddy-request`, W3C/B3 tracing and
+  the observed intent headers; the unobserved `X-Agent-Type` is not invented.
+  Raw inbound session/auth/profile/trace headers are scrubbed before canonical
+  values are applied, including on the generic HTTP executor path.
+- Replace four independent random chat IDs with lifecycle-correct identities:
+  conversation IDs stay stable per account/session, conversation-request IDs
+  stay stable for one user turn and change on the next turn, while transport
+  request/message IDs remain unique per attempt. CPA canonical/execution/
+  derived session metadata and explicit session headers lead; first-user-turn
+  hashing is the bounded fallback. IDs use the client's lowercase RFC 4122 v4
+  shape; `acp-connection-id` is stable per downstream session. No raw prompt or
+  session text is sent in an ID.
+- Add semantics-bounded WorkBuddy JSON-Schema fitting and request-local
+  reversible tool aliases. Generic traversal only repairs NUL patterns and
+  tuple `items`; shape repair follows known schema slots, so ordinary payload
+  maps and `const/default/readOnly` booleans are never reinterpreted as schemas.
+  Empty, invalid and overlong tool names use deterministic fixed-length,
+  prefix-free hash aliases; tool choice/history are rewritten and modern plus
+  legacy tool names are restored in synchronous SSE, asynchronous SSE and
+  folded responses. A stream ending on an incomplete alias fails as truncated.
+- Repair a gateway-invalid `tool -> user` tail by inserting one empty assistant
+  boundary, and normalize `max_completion_tokens` to `max_tokens` without
+  overriding an explicit `max_tokens`.
+- Add offline tests for session/turn stability (including repeated identical
+  user text), account isolation, schema semantics, modern/legacy tool-name
+  round trips, SSE fragmentation/truncation, realm/profile persistence, exact
+  W3C/B3 relations, malicious header scrubbing, Global refresh and Mac version
+  pins. No real upstream inference request was used for this release.
+- Document the future routing pipeline without changing `staged-scheduler`, and
+  record the optional sidecar's signed/atomic distribution plan plus the current
+  limitation that CPA's Go transport does not reproduce Electron TLS/H2.
+- Record the OmniRoute-derived schema/turn portions and their MIT license in
+  `THIRD_PARTY_NOTICES.md`.
+
 ## 0.9.28 — 2026-11-12
 
 - Fix selected reasoning effort disappearing on the actual WorkBuddy upstream

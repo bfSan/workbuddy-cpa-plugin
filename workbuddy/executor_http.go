@@ -47,10 +47,15 @@ func handleExecHTTPRequest(raw []byte) ([]byte, error) {
 	if httpReq.Header == nil {
 		httpReq.Header = make(http.Header)
 	}
-	backendHeaders(httpReq, sa)
-	// The generic transport can also carry chat requests. Do not let it bypass
-	// plugin-owned holds, but never apply them to billing/catalog/OAuth calls.
+	// The generic transport can also carry chat requests. Give only those calls
+	// a conversation identity; catalog/billing/OAuth traffic shares account
+	// headers but must not masquerade as a chat turn.
 	isChat := executorHTTPIsChat(target, sa)
+	if isChat {
+		backendChatHeaders(httpReq, sa, req.Body, nil, req.Headers)
+	} else {
+		backendHeaders(httpReq, sa)
+	}
 	model := ""
 	if isChat {
 		model = executorHTTPModel(req.Body)

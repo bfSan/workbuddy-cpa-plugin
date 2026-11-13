@@ -24,7 +24,7 @@ func TestPreserveExpiry(t *testing.T) {
 func TestRefreshKeepsExpiryWhenExpiresInMissing(t *testing.T) {
 	oldExpiry := time.Now().Add(30 * time.Minute).Unix()
 	storage := []byte(`{"auth":{"accessToken":"old-at","refreshToken":"rt","expiresAt":` +
-		strconv.FormatInt(oldExpiry, 10) + `},"account":{"uid":"u1","nickname":"n"}}`)
+		strconv.FormatInt(oldExpiry, 10) + `,"domain":"www.codebuddy.cn"},"account":{"uid":"u1","nickname":"n"}}`)
 	sa, err := parseStored(storage)
 	if err != nil {
 		t.Fatalf("parseStored: %v", err)

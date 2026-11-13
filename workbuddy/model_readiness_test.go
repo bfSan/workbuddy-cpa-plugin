@@ -196,8 +196,8 @@ func TestModelRuntimeFreshBootstrapModelFutureSchemaIsCacheRead(t *testing.T) {
 		AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-future-models", StorageJSON: mustJSON(sa)},
 		HostCallbackID:   "callback-failure",
 	})
-	if calls != 2 {
-		t.Fatalf("WorkBuddy refresh calls = %d, want 2", calls)
+	if calls != 1 {
+		t.Fatalf("WorkBuddy refresh calls = %d, want 1", calls)
 	}
 	if got.State != modelFailed || got.ErrorCode != modelErrorCacheRead {
 		t.Fatalf("snapshot = %#v", got)
@@ -409,7 +409,7 @@ func TestModelRuntimeSameAuthSingleflight(t *testing.T) {
 			t.Fatalf("result = %#v", result)
 		}
 	}
-	if workBuddyCalls.Load() != 2 || metadataCalls.Load() != 1 {
+	if workBuddyCalls.Load() != 1 || metadataCalls.Load() != 1 {
 		t.Fatalf("calls: workbuddy=%d metadata=%d", workBuddyCalls.Load(), metadataCalls.Load())
 	}
 }
@@ -482,7 +482,7 @@ func TestModelRuntimeDifferentAuthIsolation(t *testing.T) {
 	if !concurrent {
 		t.Fatal("different auth WorkBuddy requests were serialized")
 	}
-	if cnCalls.Load() != 2 || globalCalls.Load() != 2 {
+	if cnCalls.Load() != 1 || globalCalls.Load() != 1 {
 		t.Fatalf("WorkBuddy calls: cn=%d global=%d", cnCalls.Load(), globalCalls.Load())
 	}
 	if gotCN.State != modelReady || len(gotCN.Models) != 1 || gotCN.Models[0].ID != "cn-model" {
@@ -983,7 +983,7 @@ func TestModelRuntimeConfigGenerationInvalidatesSnapshot(t *testing.T) {
 		}
 
 		newResult := runtime.ensureForAuth(req)
-		if workBuddyCalls.Load() != 4 || newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-beta" {
+		if workBuddyCalls.Load() != 2 || newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-beta" {
 			t.Fatalf("calls=%d new result=%#v", workBuddyCalls.Load(), newResult)
 		}
 	})
@@ -1050,7 +1050,7 @@ func TestModelRuntimeConfigGenerationInvalidatesSnapshot(t *testing.T) {
 		}
 
 		newResult := runtime.ensureForAuth(req)
-		if workBuddyCalls.Load() != 4 || metadataCalls.Load() != 2 || newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-alpha" {
+		if workBuddyCalls.Load() != 2 || metadataCalls.Load() != 2 || newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-alpha" {
 			t.Fatalf("workbuddy=%d metadata=%d new result=%#v", workBuddyCalls.Load(), metadataCalls.Load(), newResult)
 		}
 	})
@@ -1256,13 +1256,9 @@ func TestModelRuntimeStaleMatrix(t *testing.T) {
 				AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-stale", StorageJSON: mustJSON(sa)},
 				HostCallbackID:   "callback-stale",
 			})
-			// A failing catalogue request never reaches the CLI fill-in
-			// request, while a successful one always issues both identity
-			// requests. Metadata is intentionally single-flight either way.
-			wantWorkBuddyCalls := 2
-			if tt.workBuddyFails {
-				wantWorkBuddyCalls = 1
-			}
+			// Catalog discovery uses one persisted identity; metadata remains
+			// single-flight whether that request succeeds or fails.
+			wantWorkBuddyCalls := 1
 			if workBuddyCalls != wantWorkBuddyCalls || metadataCalls != 1 {
 				t.Fatalf("refresh calls: workbuddy=%d metadata=%d, want %d catalogue and 1 metadata", workBuddyCalls, metadataCalls, wantWorkBuddyCalls)
 			}

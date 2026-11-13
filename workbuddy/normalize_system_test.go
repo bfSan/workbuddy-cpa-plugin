@@ -155,5 +155,3 @@ func TestPrepareUpstreamBody_NormalizesDeveloperRole(t *testing.T) {
 		t.Fatalf("after prepareUpstreamBody first role = %v, want system (11128 guard)", first["role"])
 	}
 }
-
-

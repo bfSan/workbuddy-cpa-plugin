@@ -13,7 +13,8 @@
 |---|---|
 | OAuth 登录 | 多账号 `workbuddy-<uid>.json`，CN 与 Global 共用同一插件与同一配置块 |
 | 模型目录 | 默认按账号动态发现并缓存；可选 YAML 权威清单覆盖发现；缺失元数据从 models.dev 补全。面板「刷新」会带 `?refresh=1` 丢弃缓存并重新向上游发现（拉取失败时保留上一次可用目录并明确提示）。宿主 alias/exclusion 仍生效，插件另有持久化 `hidden_models` 过滤 |
-| Executor | OpenAI 兼容 chat completions，流式（真 SSE）与非流式都支持 |
+| Executor | OpenAI 兼容 chat completions，流式（真 SSE）与非流式都支持；含稳定会话/轮次 ID、深层 Tool Schema 修复、可逆工具名和 Turn 顺序修复 |
+| 客户端一致性 | CN WorkBuddy、Global WorkBuddy AI、CodeBuddy CLI 分别使用独立且内部一致的 UA / `X-IDE-*` / Origin profile，OAuth、刷新、目录与聊天共用版本源 |
 | 积分生命周期 | CN 账号积分耗尽自动 disable，签到恢复后自动启用；Global 账号耗尽即删除 |
 | 每日签到 | CN 账号本地时间 09:00 / 21:00 自动签到，面板可手动「全部签到」 |
 | Global 专家包 | 面板手动领取一次性专家加油包 |

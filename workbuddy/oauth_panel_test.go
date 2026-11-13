@@ -42,8 +42,8 @@ func TestHandleOAuthStart_UsesWorkBuddyDesktopProfile(t *testing.T) {
 	if request.URL.String() != upstreamBaseCN+"/v2/plugin/auth/state?platform=workbuddy" {
 		t.Fatalf("state request URL = %q", request.URL.String())
 	}
-	if got := request.Header.Get("User-Agent"); got != workBuddyDesktopUA {
-		t.Fatalf("User-Agent = %q, want %q", got, workBuddyDesktopUA)
+	if got := request.Header.Get("User-Agent"); got != workBuddyDesktopUACN {
+		t.Fatalf("User-Agent = %q, want %q", got, workBuddyDesktopUACN)
 	}
 
 	rawURL, _ := res["url"].(string)
@@ -57,8 +57,8 @@ func TestHandleOAuthStart_UsesWorkBuddyDesktopProfile(t *testing.T) {
 	if got := u.Query().Get("platform"); got != oauthClientModeWorkBuddy {
 		t.Fatalf("platform = %q, want workbuddy", got)
 	}
-	if got := u.Query().Get("version"); got != "5.3.14" {
-		t.Fatalf("version = %q, want 5.3.14", got)
+	if got := u.Query().Get("version"); got != loginVersionCN {
+		t.Fatalf("version = %q, want %s", got, loginVersionCN)
 	}
 	// ★ loginSessionId must NOT be added. Upstream's authUrl carries only
 	// platform+state, the desktop client's own URL carries only

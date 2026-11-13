@@ -9,6 +9,7 @@
 //     U+200B zero-width variant the kernel emits between the two words),
 //   - the file-reference phrase "Tokens prefixed with @ ..." once the
 //     surrounding text crosses the gateway's phrase-length threshold.
+//
 // "coding agent powered by" is rewritten as a semantic-equivalent defensive
 // measure (the gateway pattern is sentence-shaped, not a fixed length).
 //

@@ -61,7 +61,10 @@ import "C"
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -70,6 +73,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -89,14 +93,7 @@ const (
 	upstreamBaseCN = "https://copilot.tencent.com"
 	// Global chat/auth gateway (iss = workbuddy.ai realm). APISIX on
 	// copilot.tencent.com rejects Global JWTs with 401; must use workbuddy.ai.
-	upstreamBaseGlobal = "https://www.workbuddy.ai"
-	clientUA           = "CLI/2.63.2 CodeBuddy/2.63.2"
-	// workBuddyDesktopUA identifies as the WorkBuddy desktop client. Upstream
-	// tiers its catalog by User-Agent: a CLI identity is served a narrow list
-	// that omits the fast/balanced/deep presets and the default model, while the
-	// desktop identity receives the full catalog. Catalog discovery therefore
-	// has to present the desktop identity or those models stay invisible.
-	workBuddyDesktopUA  = "WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0"
+	upstreamBaseGlobal  = "https://www.workbuddy.ai"
 	originReferer       = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
 
@@ -369,7 +366,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.28"
+var version = "0.9.29"
 
 func wbRegistration() registration {
 	return registration{
@@ -454,6 +451,7 @@ type storedTokens struct {
 	RefreshToken string `json:"refreshToken"`
 	ExpiresAt    int64  `json:"expiresAt"`
 	Domain       string `json:"domain"`
+	ClientMode   string `json:"clientMode,omitempty"`
 }
 
 type storedAccount struct {
@@ -510,6 +508,7 @@ func parseStored(raw []byte) (*storedAuth, error) {
 			RefreshToken string `json:"refreshToken"`
 			ExpiresAt    int64  `json:"expiresAt"`
 			Domain       string `json:"domain"`
+			ClientMode   string `json:"clientMode"`
 			UID          string `json:"uid"`
 			EnterpriseID string `json:"enterpriseId"`
 			Nickname     string `json:"nickname"`
@@ -517,11 +516,21 @@ func parseStored(raw []byte) (*storedAuth, error) {
 		if err := json.Unmarshal(raw, &flat); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
 		}
-		sa.Auth = storedTokens{AccessToken: flat.AccessToken, RefreshToken: flat.RefreshToken, ExpiresAt: flat.ExpiresAt, Domain: flat.Domain}
+		sa.Auth = storedTokens{AccessToken: flat.AccessToken, RefreshToken: flat.RefreshToken, ExpiresAt: flat.ExpiresAt, Domain: flat.Domain, ClientMode: flat.ClientMode}
 		sa.Account = storedAccount{UID: flat.UID, EnterpriseID: flat.EnterpriseID, Nickname: flat.Nickname}
 	}
 	if sa.Auth.AccessToken == "" {
 		return nil, fmt.Errorf("parse_error: missing accessToken")
+	}
+	sa.Auth.ClientMode = strings.ToLower(strings.TrimSpace(sa.Auth.ClientMode))
+	if sa.Auth.ClientMode != "" && sa.Auth.ClientMode != oauthClientModeCLI && sa.Auth.ClientMode != oauthClientModeWorkBuddy {
+		return nil, fmt.Errorf("parse_error: unsupported clientMode")
+	}
+	if isGlobalDomain(sa.Auth.Domain) {
+		sa.Auth.ClientMode = oauthClientModeWorkBuddy
+	}
+	if err := validateAndNormalizeStoredAuthRealm(&sa); err != nil {
+		return nil, fmt.Errorf("parse_error: %w", err)
 	}
 	return &sa, nil
 }
@@ -529,6 +538,25 @@ func parseStored(raw []byte) (*storedAuth, error) {
 // -------------------------------------------------------------------------------
 // HTTP plumbing
 // -------------------------------------------------------------------------------
+
+func sanitizeProviderOwnedHeaders(headers http.Header) {
+	// Generic executor HTTP starts with caller-provided headers. A deny-list is
+	// not sufficient here: new SDK/session/trace families (X-Stainless-*,
+	// Sentry-Trace, Baggage, vendor trace IDs) would silently escape. Preserve
+	// only cache/content negotiation headers; account, profile, auth, session and
+	// trace identity are always rebuilt by this plugin.
+	allowed := map[string]struct{}{
+		"accept": {}, "content-type": {}, "cache-control": {}, "pragma": {},
+		"if-match": {}, "if-none-match": {}, "if-modified-since": {},
+		"if-unmodified-since": {}, "range": {},
+	}
+	for key := range headers {
+		name := strings.ToLower(strings.TrimSpace(key))
+		if _, ok := allowed[name]; !ok {
+			delete(headers, key)
+		}
+	}
+}
 
 func commonHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
@@ -570,6 +598,7 @@ func endpointTokenRefreshFor(sa *storedAuth) string {
 // backendHeaders applies auth-derived headers to a chat completion request.
 // Empty fields are signalled via the X-No-* convention used by CodeBuddy.
 func backendHeaders(req *http.Request, sa *storedAuth) {
+	sanitizeProviderOwnedHeaders(req.Header)
 	commonHeaders(req)
 	if sa.Auth.AccessToken != "" {
 		req.Header.Set("Authorization", "Bearer "+sa.Auth.AccessToken)
@@ -583,6 +612,7 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 	}
 	if sa.Account.EnterpriseID != "" {
 		req.Header.Set("X-Enterprise-Id", sa.Account.EnterpriseID)
+		req.Header.Set("X-Tenant-Id", sa.Account.EnterpriseID)
 	} else {
 		req.Header.Set("X-No-Enterprise-Id", "1")
 	}
@@ -595,30 +625,51 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 	} else {
 		req.Header.Set("X-No-Department-Info", "1")
 	}
-	req.Header.Set("X-Product", "SaaS")
-	// Client-identifying headers. Tencent's billing/usage backend uses these to
-	// populate the "client" (客户端) field; without them requests show as empty.
-	req.Header.Set("X-IDE-Type", "CLI")
-	req.Header.Set("X-IDE-Name", "CLI")
-	req.Header.Set("X-IDE-Version", "2.63.2")
-	req.Header.Set("X-Agent-Intent", "craft")
-	req.Header.Set("X-Request-ID", randomHex(16))
-	req.Header.Set("X-Conversation-ID", randomHex(16))
-	req.Header.Set("X-Conversation-Request-ID", randomHex(16))
-	req.Header.Set("X-Conversation-Message-ID", randomHex(16))
-	// Override Origin/Referer for Global accounts so the upstream doesn't
-	// reject the request as cross-origin.
-	origin := originRefererFor(sa)
-	req.Header.Set("Origin", origin)
-	req.Header.Set("Referer", origin+"/")
+	// Apply one coherent client family. A WorkBuddy UA paired with CLI IDE
+	// headers is a stronger anomaly signal than either legitimate profile.
+	applyWireProfileHeaders(req, wireProfileForStoredAuth(sa))
+	// Conversation/request identity and agent intent are chat-only and are
+	// attached by backendChatHeaders. Catalog, billing and OAuth calls must not
+	// look like conversation turns merely because they share account headers.
+	// Origin/Referer already come from the same wire profile as UA and X-IDE;
+	// do not overwrite a CN WorkBuddy desktop origin with the CLI web origin.
 }
 
-// randomHex returns n random bytes hex-encoded. CodeBuddy conversation/request
-// IDs are 32-char hex strings; this keeps them UUID-free but stable enough.
+var (
+	randomFallbackKey     = mustRandomFallbackKey()
+	randomFallbackCounter atomic.Uint64
+)
+
+func mustRandomFallbackKey() [32]byte {
+	var key [32]byte
+	if _, err := io.ReadFull(rand.Reader, key[:]); err != nil {
+		panic("workbuddy: secure random source unavailable during initialization")
+	}
+	return key
+}
+
+// randomHex returns n random bytes hex-encoded. It is used for W3C/B3 trace
+// components and legacy billing IDs; chat request/message IDs use UUIDs. If the
+// kernel RNG fails after initialization, a process-local HMAC counter generator
+// seeded from the startup CSPRNG preserves unpredictability and uniqueness. A
+// startup entropy failure aborts plugin initialization rather than emitting
+// time-derived identifiers.
 func randomHex(n int) string {
+	if n <= 0 {
+		return ""
+	}
 	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("%0*x", n*2, time.Now().UnixNano())
+	if _, err := io.ReadFull(rand.Reader, b); err == nil {
+		return hex.EncodeToString(b)
+	}
+	for offset := 0; offset < len(b); {
+		counter := randomFallbackCounter.Add(1)
+		var encoded [8]byte
+		binary.BigEndian.PutUint64(encoded[:], counter)
+		mac := hmac.New(sha256.New, randomFallbackKey[:])
+		_, _ = mac.Write([]byte("workbuddy-random-fallback-v1"))
+		_, _ = mac.Write(encoded[:])
+		offset += copy(b[offset:], mac.Sum(nil))
 	}
 	return hex.EncodeToString(b)
 }
@@ -765,12 +816,13 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	// upstream and fold the chunks into a single chat.completion object.
 	// prepareUpstreamBody does forceStream + normalizeTools + rewriteSystem +
 	// ensureSystemMessage + rewriteModel in ONE unmarshal/marshal pass.
-	body := prepareUpstreamBody(req.Payload, req.OriginalRequest, sa, upstreamModel)
+	prepared := prepareUpstreamRequest(req.Payload, req.OriginalRequest, sa, upstreamModel)
+	body := prepared.Body
 	httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	backendHeaders(httpReq, sa)
+	backendChatHeaders(httpReq, sa, body, req.Metadata, req.Headers)
 	// Compliance: route via host.http.do_stream so request-log captures the
 	// outbound call. Read entire body via the bridge, then fold SSE → completion.
 	if blocked := guardExecutorQuota(req.AuthID, upstreamModel); blocked != nil {
@@ -790,7 +842,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		recordUpstreamFailureWithHeaders(req.AuthID, upstreamModel, statusCode, string(payload), responseHeaders)
 		return errorEnvelopeFor(chatUpstreamError(statusCode, string(payload))), nil
 	}
-	completion, err := aggregateCompletionWithQuota(reader, req.Model, req.AuthID, upstreamModel, responseHeaders)
+	completion, err := aggregateCompletionWithQuotaAndTools(reader, req.Model, req.AuthID, upstreamModel, responseHeaders, prepared.ToolNames)
 	if err != nil {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		return nil, err
@@ -832,7 +884,8 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// Single-pass JSON rewrite (see handleExecExecute for the non-stream path).
 	// Keep OriginalRequest available: CPA's normalized Payload can omit the
 	// Responses reasoning.effort selected by the caller.
-	body := prepareUpstreamBody(req.Payload, req.OriginalRequest, sa, upstreamModel)
+	prepared := prepareUpstreamRequest(req.Payload, req.OriginalRequest, sa, upstreamModel)
+	body := prepared.Body
 
 	headers := streamHeaders()
 	sseFramed := clientNeedsSSEFrame(req.Metadata)
@@ -840,7 +893,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// No async stream id → fall back to synchronous chunk collection.
 	if req.StreamID == "" {
 		collector := &sseUsageCollector{}
-		chunks, statusCode, errCollect := collectUpstreamStream(body, sa, sseFramed, collector, req.HostCallbackID, req.AuthID, upstreamModel)
+		chunks, statusCode, errCollect := collectUpstreamStreamWithIdentity(body, sa, sseFramed, collector, req.HostCallbackID, req.AuthID, upstreamModel, req.Metadata, req.Headers, prepared.ToolNames)
 		if errCollect != nil {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error())
 			var statusErr *upstreamStatusError
@@ -867,8 +920,8 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		streamClose(req.StreamID)
 		return okEnvelope(streamResponse{Headers: headers})
 	}
-	backendHeaders(httpReq, sa)
-	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, req.HostCallbackID)
+	backendChatHeaders(httpReq, sa, body, req.Metadata, req.Headers)
+	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, req.HostCallbackID, prepared.ToolNames)
 	return okEnvelope(streamResponse{Headers: headers})
 }
 

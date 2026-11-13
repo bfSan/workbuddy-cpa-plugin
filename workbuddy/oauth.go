@@ -129,18 +129,15 @@ type oauthRequestProfile struct {
 
 // Login surface parameters, per realm.
 //
-// CN: platform=workbuddy, client 5.3.14 — the values the CN portal has always
-// used, kept as the default so nothing that worked changes.
-// Global: platform=workbuddy-ai, client 5.7.6 — what the desktop client sends.
-// Confirmed against the live upstream 2026-10-08: auth/state echoes the platform
-// back in its authUrl (platform=workbuddy vs platform=workbuddy-ai), and the
-// Global page only reaches its sign-in branch (/console/auth/risk-context) with
-// the workbuddy-ai platform and the newer client version.
+// CN and Global keep different platform markers and version pins. Versions are
+// aliases of the central wire profiles so OAuth cannot drift from chat/catalog
+// after a client update.
 const (
+	loginPlatformCLI    = "CLI"
 	loginPlatformCN     = "workbuddy"
 	loginPlatformGlobal = "workbuddy-ai"
-	loginVersionCN      = "5.3.14"
-	loginVersionGlobal  = "5.7.6"
+	loginVersionCN      = workBuddyCNVersion
+	loginVersionGlobal  = workBuddyGlobalVersion
 )
 
 // oauthLoginRegion selects which upstream realm a NEW login targets. CN is the
@@ -175,38 +172,29 @@ func oauthProfileForMode(mode string) oauthRequestProfile {
 }
 
 func oauthProfileForModeRegion(mode, region string) oauthRequestProfile {
-	if mode == oauthClientModeWorkBuddy {
-		// CN servers the login portal from www.workbuddy.cn but the API from
-		// copilot.tencent.com; the international realm uses workbuddy.ai for both,
-		// which is why origin and base are chosen together rather than one of them.
+	wire := wireProfileForLogin(mode, region)
+	if wire.Mode == oauthClientModeWorkBuddy {
+		base := upstreamBaseCN
 		if normalizeOAuthLoginRegion(region) == oauthLoginRegionGlobal {
-			return oauthRequestProfile{
-				mode:          oauthClientModeWorkBuddy,
-				stateURL:      upstreamBaseGlobal + "/v2/plugin/auth/state?platform=" + loginPlatformGlobal,
-				userAgent:     workBuddyDesktopUA,
-				origin:        originRefererGlobal,
-				base:          upstreamBaseGlobal,
-				platform:      loginPlatformGlobal,
-				clientVersion: loginVersionGlobal,
-			}
+			base = upstreamBaseGlobal
 		}
 		return oauthRequestProfile{
-			mode:          oauthClientModeWorkBuddy,
-			stateURL:      upstreamBaseCN + "/v2/plugin/auth/state?platform=" + loginPlatformCN,
-			userAgent:     workBuddyDesktopUA,
-			origin:        "https://www.workbuddy.cn",
-			base:          upstreamBaseCN,
-			platform:      loginPlatformCN,
-			clientVersion: loginVersionCN,
+			mode:          wire.Mode,
+			stateURL:      base + "/v2/plugin/auth/state?platform=" + wire.Platform,
+			userAgent:     wire.UserAgent,
+			origin:        wire.Origin,
+			base:          base,
+			platform:      wire.Platform,
+			clientVersion: wire.Version,
 		}
 	}
 	return oauthRequestProfile{
 		mode:          oauthClientModeCLI,
 		stateURL:      endpointAuthState,
-		userAgent:     clientUA,
-		origin:        originReferer,
-		platform:      loginPlatformCN,
-		clientVersion: loginVersionCN,
+		userAgent:     wire.UserAgent,
+		origin:        wire.Origin,
+		platform:      wire.Platform,
+		clientVersion: wire.Version,
 		base:          upstreamBaseCN,
 	}
 }
@@ -429,6 +417,7 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("refresh: %w", err)
 	}
+	originalRealm, originalRealmKnown := workBuddyRealmFromDomain(sa.Auth.Domain)
 	// Route via host.http.do so request-log captures the refresh call (H2
 	// compliance: was doJSON(sharedHTTPClient()) — bypassed host transport
 	// policy + logging for the X-Refresh-Token endpoint).
@@ -452,6 +441,12 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 		sa.Auth.Domain = tok.Domain
 	}
 	sa.Auth.ExpiresAt = expiryFromExpiresIn(tok.ExpiresIn, sa.Auth.ExpiresAt)
+	if err := validateAndNormalizeStoredAuthRealm(sa); err != nil {
+		return nil, fmt.Errorf("refresh_failed: realm mismatch")
+	}
+	if refreshedRealm, known := workBuddyRealmFromDomain(sa.Auth.Domain); originalRealmKnown && (!known || refreshedRealm != originalRealm) {
+		return nil, fmt.Errorf("refresh_failed: realm changed")
+	}
 	// No explicit host.auth.save here: the host's auth Manager persists the
 	// refreshed credential itself after Refresh returns (conductor.go
 	// refreshAuth → m.Update → persist). Writing from the plugin too would
@@ -464,26 +459,38 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	return response, nil
 }
 
-func buildLoginStoredAuth(tok tokenData, acct accountData) (*storedAuth, error) {
+func buildLoginStoredAuth(tok tokenData, acct accountData, clientMode string) (*storedAuth, error) {
 	if strings.TrimSpace(tok.AccessToken) == "" {
 		return nil, fmt.Errorf("token response missing accessToken")
 	}
 	if strings.TrimSpace(acct.UID) == "" {
 		return nil, fmt.Errorf("account lookup missing uid")
 	}
-	return &storedAuth{
+	clientMode = strings.ToLower(strings.TrimSpace(clientMode))
+	if clientMode != oauthClientModeCLI && clientMode != oauthClientModeWorkBuddy {
+		return nil, fmt.Errorf("unsupported OAuth client mode")
+	}
+	if isGlobalDomain(tok.Domain) {
+		clientMode = oauthClientModeWorkBuddy
+	}
+	sa := &storedAuth{
 		Auth: storedTokens{
 			AccessToken:  tok.AccessToken,
 			RefreshToken: tok.RefreshToken,
 			ExpiresAt:    expiryFromExpiresIn(tok.ExpiresIn, 0),
 			Domain:       tok.Domain,
+			ClientMode:   clientMode,
 		},
 		Account: storedAccount{
 			UID:          acct.UID,
 			EnterpriseID: acct.EnterpriseID,
 			Nickname:     acct.Nickname,
 		},
-	}, nil
+	}
+	if err := validateAndNormalizeStoredAuthRealm(sa); err != nil {
+		return nil, fmt.Errorf("login realm validation failed")
+	}
+	return sa, nil
 }
 
 func expiryFromExpiresIn(expiresIn, oldExpiry int64) int64 {

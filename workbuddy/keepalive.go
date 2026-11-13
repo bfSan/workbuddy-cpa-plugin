@@ -73,11 +73,7 @@ func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
 }
 
 func refreshCallWithCallback(sa *storedAuth, callbackID string) (json.RawMessage, []byte, int, error) {
-	mode := oauthClientModeCLI
-	if features := currentFeatureRuntime(); features != nil {
-		mode = features.oauthClientMode
-	}
-	req, err := buildTokenRefreshRequest(oauthProfileForMode(mode), sa)
+	req, err := buildTokenRefreshRequest(oauthProfileForStoredAuth(sa), sa)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -130,6 +126,7 @@ func refreshOneAuthUnlockedWithCallback(authIndex, authID, callbackID string) (s
 	if strings.TrimSpace(sa.Auth.RefreshToken) == "" {
 		return "skipped", fmt.Errorf("no refreshToken")
 	}
+	originalRealm, originalRealmKnown := workBuddyRealmFromDomain(sa.Auth.Domain)
 
 	data, raw, status, err := refreshCallWithCallback(sa, callbackID)
 	if err != nil {
@@ -157,6 +154,12 @@ func refreshOneAuthUnlockedWithCallback(authIndex, authID, callbackID string) (s
 		sa.Auth.Domain = tok.Domain
 	}
 	sa.Auth.ExpiresAt = expiryFromExpiresIn(tok.ExpiresIn, sa.Auth.ExpiresAt)
+	if err := validateAndNormalizeStoredAuthRealm(sa); err != nil {
+		return "failed", fmt.Errorf("refresh_failed: realm mismatch")
+	}
+	if refreshedRealm, known := workBuddyRealmFromDomain(sa.Auth.Domain); originalRealmKnown && (!known || refreshedRealm != originalRealm) {
+		return "failed", fmt.Errorf("refresh_failed: realm changed")
+	}
 	if err := persistAuthTokens(authIndex, sa); err != nil {
 		return "error", fmt.Errorf("persist: %w", err)
 	}

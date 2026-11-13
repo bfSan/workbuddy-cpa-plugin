@@ -14,6 +14,7 @@ import (
 //     U+200B zero-width variant the kernel emits),
 //   - the file-reference phrase "Tokens prefixed with @ ..." once it crosses
 //     the gateway's phrase-length threshold.
+//
 // "coding agent powered by" is neutralized defensively (semantic-equivalent).
 func TestNeutralizeFingerprintString_BrandIdentity(t *testing.T) {
 	cases := map[string]string{

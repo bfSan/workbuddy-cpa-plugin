@@ -43,17 +43,20 @@ type desensitizeMatcher struct {
 }
 
 type featureRuntimeConfig struct {
-	desensitizeEnabled bool
-	desensitizeTerms   []string
-	desensitizeSource  string
-	matcher            *desensitizeMatcher
-	oauthClientMode    string
-	enterpriseCredits  bool
-	configuredModels   []string
-	configuredCredits  map[string]string
-	hiddenModels       []string
-	modelOrder         []string
-	modelContext       map[string]int64
+	desensitizeEnabled   bool
+	desensitizeTerms     []string
+	desensitizeSource    string
+	matcher              *desensitizeMatcher
+	oauthClientMode      string
+	wireVersionCLI       string
+	wireVersionCNDesktop string
+	wireVersionGlobal    string
+	enterpriseCredits    bool
+	configuredModels     []string
+	configuredCredits    map[string]string
+	hiddenModels         []string
+	modelOrder           []string
+	modelContext         map[string]int64
 }
 
 var featureRuntime atomic.Pointer[featureRuntimeConfig]
@@ -92,11 +95,14 @@ func currentFeatureRuntime() *featureRuntimeConfig {
 }
 
 type featureConfigYAML struct {
-	Desensitize       *bool     `yaml:"desensitize"`
-	DesensitizeTerms  *[]string `yaml:"desensitize_terms"`
-	OAuthClientMode   string    `yaml:"oauth_client_mode"`
-	EnterpriseCredits *bool     `yaml:"enterprise_credits"`
-	Models            yaml.Node `yaml:"models"`
+	Desensitize              *bool     `yaml:"desensitize"`
+	DesensitizeTerms         *[]string `yaml:"desensitize_terms"`
+	OAuthClientMode          string    `yaml:"oauth_client_mode"`
+	WireVersionCLI           string    `yaml:"wire_version_cli"`
+	WireVersionCNDesktop     string    `yaml:"wire_version_cn_desktop"`
+	WireVersionGlobalDesktop string    `yaml:"wire_version_global_desktop"`
+	EnterpriseCredits        *bool     `yaml:"enterprise_credits"`
+	Models                   yaml.Node `yaml:"models"`
 	// ModelCredits pins a multiplier per model ID, overriding whatever the
 	// upstream reported. Empty value clears the override.
 	ModelCredits yaml.Node `yaml:"model_credits"`
@@ -125,6 +131,18 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 	}
 	if mode != oauthClientModeCLI && mode != oauthClientModeWorkBuddy {
 		return nil, errors.New("oauth_client_mode must be cli or workbuddy")
+	}
+	wireVersionCLI, err := normalizeWireVersionOverride("wire_version_cli", doc.WireVersionCLI)
+	if err != nil {
+		return nil, err
+	}
+	wireVersionCN, err := normalizeWireVersionOverride("wire_version_cn_desktop", doc.WireVersionCNDesktop)
+	if err != nil {
+		return nil, err
+	}
+	wireVersionGlobal, err := normalizeWireVersionOverride("wire_version_global_desktop", doc.WireVersionGlobalDesktop)
+	if err != nil {
+		return nil, err
 	}
 
 	terms, source, err := normalizedDesensitizeTerms(doc.DesensitizeTerms)
@@ -156,17 +174,20 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 		return nil, err
 	}
 	return &featureRuntimeConfig{
-		desensitizeEnabled: doc.Desensitize != nil && *doc.Desensitize,
-		desensitizeTerms:   terms,
-		desensitizeSource:  source,
-		matcher:            matcher,
-		oauthClientMode:    mode,
-		enterpriseCredits:  doc.EnterpriseCredits != nil && *doc.EnterpriseCredits,
-		configuredModels:   models,
-		configuredCredits:  credits,
-		hiddenModels:       hiddenModels,
-		modelOrder:         modelOrder,
-		modelContext:       modelContext,
+		desensitizeEnabled:   doc.Desensitize != nil && *doc.Desensitize,
+		desensitizeTerms:     terms,
+		desensitizeSource:    source,
+		matcher:              matcher,
+		oauthClientMode:      mode,
+		wireVersionCLI:       wireVersionCLI,
+		wireVersionCNDesktop: wireVersionCN,
+		wireVersionGlobal:    wireVersionGlobal,
+		enterpriseCredits:    doc.EnterpriseCredits != nil && *doc.EnterpriseCredits,
+		configuredModels:     models,
+		configuredCredits:    credits,
+		hiddenModels:         hiddenModels,
+		modelOrder:           modelOrder,
+		modelContext:         modelContext,
 	}, nil
 }
 

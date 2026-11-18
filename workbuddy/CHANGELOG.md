@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.9.30 — 2026-11-18
+
+- Add three independent, strictly validated `x.y.z` wire-version overrides:
+  `wire_version_cli`, `wire_version_cn_desktop`, and
+  `wire_version_global_desktop`. Empty values retain the audited 2.172.1 / 5.9.3
+  / 5.9.4 pins; values never auto-follow latest. Resolved versions rebuild the
+  matching UA and IDE headers and are shared by OAuth, refresh, catalog and chat.
+  In-flight OAuth checkpoints freeze their starting version across config reload
+  and restart, and catalog cache identity now includes the resolved wire version.
+  Add read-only `/plugins/workbuddy/wire-profiles` diagnostics containing only
+  realm, client mode, profile, version/source and redacted installation-identity
+  readiness — never account identifiers, session identifiers or credentials.
+- Replace unsalted stable conversation/turn/ACP hashes with domain-separated,
+  length-framed HMAC-SHA256 using one persisted 32-byte installation secret.
+  Storage is scoped to each host's absolute AuthDir (never a silent user-global
+  fallback). Unix storage uses a 0700 owner directory, 0600 regular file,
+  no-follow openat, an inter-process lock, atomic rename and file/directory
+  fsync; unavailable or malformed storage leaves chat fail-closed. Reset is
+  deliberately offline-only. The first upgrade changes existing stable IDs once; auth tokens
+  are unaffected. User-turn ordinals now count user messages only, so inserting
+  system/developer/tool/assistant wrappers cannot renumber the same user turn.
+- Add injected-entropy tests for startup fail-closed and runtime HMAC-counter
+  fallback without mutating global `crypto/rand.Reader`, plus persistence,
+  permission, symlink, reset, HMAC isolation, diagnostics and override tests.
+  Development and verification are offline only; no deployment or upstream
+  inference request was part of the 0.9.30 development verification.
+
 ## 0.9.29 — 2026-11-13
 
 - Add one realm-aware WorkBuddy wire-profile source shared by OAuth, refresh,

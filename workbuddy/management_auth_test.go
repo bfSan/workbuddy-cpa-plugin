@@ -38,7 +38,7 @@ func TestManagementKeyProtectsReadOnlyStatusRoutes(t *testing.T) {
 	})
 
 	base := loadedManagementBasePath() + "/plugins/" + providerName
-	for _, path := range []string{base + "/accounts", base + "/credits", base + "/keepalive/status"} {
+	for _, path := range []string{base + "/accounts", base + "/credits", base + "/keepalive/status", base + "/wire-profiles"} {
 		resp := managementResponseForTest(t, pluginapi.ManagementRequest{Method: http.MethodGet, Path: path})
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("GET %s status=%d want %d", path, resp.StatusCode, http.StatusUnauthorized)

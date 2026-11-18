@@ -93,6 +93,38 @@ func TestModelAuthIdentityHashChangesWithClientMode(t *testing.T) {
 	}
 }
 
+func TestModelAuthIdentityHashChangesWithWireVersion(t *testing.T) {
+	oldFeatures := currentFeatureRuntime()
+	t.Cleanup(func() { featureRuntime.Store(oldFeatures) })
+	sa := syntheticStoredAuth(t, workBuddyRealmCN)
+	sa.Auth.ClientMode = oauthClientModeWorkBuddy
+
+	builtin, err := parseFeatureRuntime(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(builtin)
+	before, err := modelAuthIdentityFor("auth-1", sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	override, err := parseFeatureRuntime([]byte("wire_version_cn_desktop: 5.10.0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(override)
+	after, err := modelAuthIdentityFor("auth-1", sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.WireVersion != workBuddyCNVersion || after.WireVersion != "5.10.0" {
+		t.Fatalf("wire versions = %q / %q", before.WireVersion, after.WireVersion)
+	}
+	if before.sha256() == after.sha256() {
+		t.Fatal("wire-version change did not isolate catalog cache identity")
+	}
+}
+
 func TestModelAuthIdentityHashIsLowercaseSHA256Filename(t *testing.T) {
 	identity, err := modelAuthIdentityFor("auth-1", syntheticStoredAuth(t, workBuddyRealmCN))
 	if err != nil {

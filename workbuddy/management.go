@@ -174,6 +174,7 @@ func managementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: base + "/desensitize", Description: "Get effective WorkBuddy desensitize runtime settings."},
+			{Method: http.MethodGet, Path: base + "/wire-profiles", Description: "Get resolved realm/client profile versions and whether each came from the audited built-in pin or an explicit override; never returns account identifiers or credentials."},
 			{Method: http.MethodGet, Path: base + "/accounts", Description: "List WorkBuddy accounts with credits, plan and check-in status."},
 			{Method: http.MethodGet, Path: base + "/egress-ip", Description: "Get the current egress IP through the active WorkBuddy HTTP route."},
 			{Method: http.MethodPost, Path: base + "/refresh", Description: "Force refresh quota/cache for all accounts."},
@@ -246,6 +247,11 @@ func handleManagement(raw []byte) ([]byte, error) {
 			"enabled": cfg.desensitizeEnabled,
 			"terms":   append([]string(nil), cfg.desensitizeTerms...),
 			"source":  cfg.desensitizeSource,
+		}))
+	case req.Method == http.MethodGet && path == base+"/wire-profiles":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{
+			"profiles":              resolvedWireProfileDiagnostics(),
+			"installation_identity": installationIdentityDiagnostics(),
 		}))
 	case req.Method == http.MethodGet && path == base+"/accounts":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardExWithCallback(false, false, req.HostCallbackID)))

@@ -624,6 +624,12 @@ func sameStringList(a, b []string) bool {
 // plugins.configs.workbuddy.hidden_models, which persists the same list and
 // triggers CPA to re-register models.
 func syncHiddenModelsConfig(hidden []string) {
+	runtime := currentModelRuntime()
+	runtime.configCommitMu.Lock()
+	defer runtime.configCommitMu.Unlock()
+	// Clone only after taking the same lock used by config commits. Otherwise a
+	// hide/restore edit can publish an old snapshot over a just-committed wire
+	// version (or any other feature field).
 	if cfg := currentFeatureRuntime(); cfg != nil {
 		cfg.hiddenModels = append([]string(nil), hidden...)
 		featureRuntime.Store(cfg)

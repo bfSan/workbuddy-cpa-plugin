@@ -267,6 +267,12 @@ func hostCall(method string, request []byte) ([]byte, error) {
 
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
+	case pluginabi.MethodModelStatic, pluginabi.MethodModelForAuth, pluginabi.MethodAuthParse, pluginabi.MethodAuthLoginStart, pluginabi.MethodAuthLoginPoll, pluginabi.MethodAuthRefresh:
+		if err := configureInstallationIdentity(request); err != nil {
+			return nil, err
+		}
+	}
+	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
 		if err := configure(request); err != nil {
 			return nil, err
@@ -366,7 +372,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.9.29"
+var version = "0.9.30"
 
 func wbRegistration() registration {
 	return registration{
@@ -389,8 +395,11 @@ func wbRegistration() registration {
 				{Name: "model_order", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional unified model display order. The panel drag handle writes the complete model ID order and it is applied after CN/Global directory union."},
 				{Name: "model_context", Type: pluginapi.ConfigFieldTypeObject, Description: "Optional per-model WorkBuddy context-window selection in tokens. Values are provider-supported context_window tiers and are persisted by CPA host config."},
 				{Name: "oauth_client_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{oauthClientModeCLI, oauthClientModeWorkBuddy}, Description: "OAuth request profile: cli (default) or explicit WorkBuddy desktop profile."},
+				{Name: "wire_version_cli", Type: pluginapi.ConfigFieldTypeString, Description: "Optional exact x.y.z CodeBuddy CLI wire-version override. Empty uses the audited built-in pin; never follows latest automatically."},
+				{Name: "wire_version_cn_desktop", Type: pluginapi.ConfigFieldTypeString, Description: "Optional exact x.y.z CN WorkBuddy desktop wire-version override. Empty uses the audited built-in pin; never follows latest automatically."},
+				{Name: "wire_version_global_desktop", Type: pluginapi.ConfigFieldTypeString, Description: "Optional exact x.y.z Global WorkBuddy desktop wire-version override. Empty uses the audited built-in pin; never follows latest automatically."},
 				{Name: "enterprise_credits", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Probe strict CN enterprise credits before personal resource packages (default false; Global unchanged)."},
-				{Name: "management_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Bearer key enforced by WorkBuddy for mutating management endpoints; also env WB_MANAGEMENT_KEY."},
+				{Name: "management_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Bearer key enforced by WorkBuddy for management API endpoints (public panel resources remain key-free); also env WB_MANAGEMENT_KEY."},
 				{Name: "proxy-url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional plugin-level proxy for all WorkBuddy HTTP traffic. Supports http, https, socks5, and socks5h; empty preserves existing routing and host-bridged calls inherit CPA. Invalid settings fail closed. Explicit proxy traffic bypasses CPA request-log."},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},
@@ -564,7 +573,7 @@ func commonHeaders(req *http.Request) {
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("Origin", originReferer)
 	req.Header.Set("Referer", originReferer+"/")
-	req.Header.Set("User-Agent", clientUA)
+	req.Header.Set("User-Agent", resolvedCodeBuddyCLIProfile().UserAgent)
 }
 
 // originRefererFor returns the Origin/Referer base URL appropriate for the
@@ -598,6 +607,10 @@ func endpointTokenRefreshFor(sa *storedAuth) string {
 // backendHeaders applies auth-derived headers to a chat completion request.
 // Empty fields are signalled via the X-No-* convention used by CodeBuddy.
 func backendHeaders(req *http.Request, sa *storedAuth) {
+	backendHeadersWithProfile(req, sa, wireProfileForStoredAuth(sa))
+}
+
+func backendHeadersWithProfile(req *http.Request, sa *storedAuth, profile workBuddyWireProfile) {
 	sanitizeProviderOwnedHeaders(req.Header)
 	commonHeaders(req)
 	if sa.Auth.AccessToken != "" {
@@ -627,7 +640,7 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 	}
 	// Apply one coherent client family. A WorkBuddy UA paired with CLI IDE
 	// headers is a stronger anomaly signal than either legitimate profile.
-	applyWireProfileHeaders(req, wireProfileForStoredAuth(sa))
+	applyWireProfileHeaders(req, profile)
 	// Conversation/request identity and agent intent are chat-only and are
 	// attached by backendChatHeaders. Catalog, billing and OAuth calls must not
 	// look like conversation turns merely because they share account headers.
@@ -641,11 +654,52 @@ var (
 )
 
 func mustRandomFallbackKey() [32]byte {
-	var key [32]byte
-	if _, err := io.ReadFull(rand.Reader, key[:]); err != nil {
+	key, err := randomFallbackKeyFrom(rand.Reader)
+	if err != nil {
 		panic("workbuddy: secure random source unavailable during initialization")
 	}
 	return key
+}
+
+func randomFallbackKeyFrom(reader io.Reader) ([32]byte, error) {
+	var key [32]byte
+	if reader == nil {
+		return key, io.ErrUnexpectedEOF
+	}
+	_, err := io.ReadFull(reader, key[:])
+	return key, err
+}
+
+func randomBytesWithFallback(reader io.Reader, n int, key [32]byte, counter *atomic.Uint64) []byte {
+	if n <= 0 {
+		return nil
+	}
+	out := make([]byte, n)
+	if reader != nil {
+		if _, err := io.ReadFull(reader, out); err == nil {
+			return out
+		}
+	}
+	for offset := 0; offset < len(out); {
+		sequence := counter.Add(1)
+		var encoded [8]byte
+		binary.BigEndian.PutUint64(encoded[:], sequence)
+		mac := hmac.New(sha256.New, key[:])
+		_, _ = mac.Write([]byte("workbuddy-random-fallback-v1"))
+		_, _ = mac.Write(encoded[:])
+		offset += copy(out[offset:], mac.Sum(nil))
+	}
+	return out
+}
+
+func randomBytes(n int) []byte {
+	return randomBytesWithFallback(rand.Reader, n, randomFallbackKey, &randomFallbackCounter)
+}
+
+type workBuddyEntropyReader struct{}
+
+func (workBuddyEntropyReader) Read(p []byte) (int, error) {
+	return copy(p, randomBytes(len(p))), nil
 }
 
 // randomHex returns n random bytes hex-encoded. It is used for W3C/B3 trace
@@ -655,23 +709,7 @@ func mustRandomFallbackKey() [32]byte {
 // startup entropy failure aborts plugin initialization rather than emitting
 // time-derived identifiers.
 func randomHex(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	b := make([]byte, n)
-	if _, err := io.ReadFull(rand.Reader, b); err == nil {
-		return hex.EncodeToString(b)
-	}
-	for offset := 0; offset < len(b); {
-		counter := randomFallbackCounter.Add(1)
-		var encoded [8]byte
-		binary.BigEndian.PutUint64(encoded[:], counter)
-		mac := hmac.New(sha256.New, randomFallbackKey[:])
-		_, _ = mac.Write([]byte("workbuddy-random-fallback-v1"))
-		_, _ = mac.Write(encoded[:])
-		offset += copy(b[offset:], mac.Sum(nil))
-	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(randomBytes(n))
 }
 
 // -----------------------------------------------------------------------------
@@ -822,7 +860,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	backendChatHeaders(httpReq, sa, body, req.Metadata, req.Headers)
+	if err := backendChatHeaders(httpReq, sa, body, req.Metadata, req.Headers); err != nil {
+		return nil, err
+	}
 	// Compliance: route via host.http.do_stream so request-log captures the
 	// outbound call. Read entire body via the bridge, then fold SSE → completion.
 	if blocked := guardExecutorQuota(req.AuthID, upstreamModel); blocked != nil {
@@ -920,7 +960,12 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		streamClose(req.StreamID)
 		return okEnvelope(streamResponse{Headers: headers})
 	}
-	backendChatHeaders(httpReq, sa, body, req.Metadata, req.Headers)
+	if err := backendChatHeaders(httpReq, sa, body, req.Metadata, req.Headers); err != nil {
+		cancel()
+		streamEmitError(req.StreamID, err.Error())
+		streamClose(req.StreamID)
+		return okEnvelope(streamResponse{Headers: headers})
+	}
 	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, req.HostCallbackID, prepared.ToolNames)
 	return okEnvelope(streamResponse{Headers: headers})
 }

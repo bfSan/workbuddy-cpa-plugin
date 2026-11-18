@@ -38,7 +38,7 @@
 客户端 wire 一致性、传输指纹边界和可选 sidecar 路线见
 [客户端一致性与传输指纹方案](docs/fingerprint-compatibility.md)。后续 `staged-scheduler`
 演进边界、session lease、sticky egress 与失败分类见
-[路由策略草案](docs/routing-strategy.md)；0.9.29 仅记录设计，未修改 scheduler。
+[路由策略草案](docs/routing-strategy.md)；0.9.30 仍仅记录设计，未修改 scheduler。
 
 ## 快速开始
 
@@ -107,6 +107,13 @@ plugins:
       # 未设置、null 或 [] 时继续动态发现 WorkBuddy catalog。
       models: []
 
+      # 可选的精确 wire 版本 override；只接受 x.y.z，空值使用经审查的
+      # built-in pin（CLI 2.172.1 / CN 5.9.3 / Global 5.9.4）。
+      # 不会自动跟随 latest；三种客户端 profile 必须分别设置。
+      wire_version_cli: ""
+      wire_version_cn_desktop: ""
+      wire_version_global_desktop: ""
+
       # WorkBuddy 插件发起的全部 HTTP 请求可使用独立代理。
       # 支持 http、https、socks5、socks5h。
       # 空值或未设置时继承现有 CPA 路由；配置无效或代理运行失败时
@@ -134,10 +141,17 @@ plugins:
       usage_report_key: ""
 
       # 插件层 management 鉴权。设置后所有 /v0/management/plugins/workbuddy/*
-      # 写端点要求该 Bearer token。空（默认）则只靠宿主 management middleware。
+      # API 端点要求该 Bearer token（公开 panel resource 不需要）。空（默认）则只靠宿主 management middleware。
       # 也可从 WB_MANAGEMENT_KEY 环境变量读。
       management_key: ""
 ```
+
+生效后的 profile 可从只读 management 路由
+`/v0/management/plugins/workbuddy/wire-profiles` 核对。响应只包含 realm、client
+mode、profile、version/source 和 installation identity 的安全状态，不包含账号、
+会话、凭据、secret 或本地路径。稳定 ID 所用的 32-byte installation secret 位于实例自己的
+`Host.AuthDir/.workbuddy-installation-identity/installation.key`；完整权限、迁移、
+备份和 offline-only reset 规则见 [客户端一致性文档](docs/fingerprint-compatibility.md)。
 
 模型 alias 和宿主级排除可继续使用 CPA 原生 `oauth-model-alias` 和
 `oauth-excluded-models`。面板里的「隐藏」不使用宿主排除配置，而是写入

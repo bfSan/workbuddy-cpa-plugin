@@ -22,6 +22,7 @@ type modelAuthIdentity struct {
 	Provider     string         `json:"provider"`
 	Realm        workBuddyRealm `json:"realm"`
 	ClientMode   string         `json:"client_mode"`
+	WireVersion  string         `json:"wire_version"`
 	UID          string         `json:"uid,omitempty"`
 	EnterpriseID string         `json:"enterprise_id,omitempty"`
 	AuthID       string         `json:"auth_id,omitempty"`
@@ -59,6 +60,10 @@ type modelStore struct {
 }
 
 func modelAuthIdentityFor(authID string, sa *storedAuth) (modelAuthIdentity, error) {
+	return modelAuthIdentityForProfile(authID, sa, wireProfileForStoredAuth(sa))
+}
+
+func modelAuthIdentityForProfile(authID string, sa *storedAuth, profile workBuddyWireProfile) (modelAuthIdentity, error) {
 	if sa == nil {
 		return modelAuthIdentity{}, fmt.Errorf("stored auth is nil")
 	}
@@ -69,7 +74,8 @@ func modelAuthIdentityFor(authID string, sa *storedAuth) (modelAuthIdentity, err
 	identity := modelAuthIdentity{
 		Provider:     providerName,
 		Realm:        realm,
-		ClientMode:   wireProfileForStoredAuth(sa).Mode,
+		ClientMode:   profile.Mode,
+		WireVersion:  profile.Version,
 		UID:          strings.TrimSpace(sa.Account.UID),
 		EnterpriseID: strings.TrimSpace(sa.Account.EnterpriseID),
 	}
@@ -85,6 +91,7 @@ func modelAuthIdentityFor(authID string, sa *storedAuth) (modelAuthIdentity, err
 func (i modelAuthIdentity) sha256() string {
 	i.Provider = strings.TrimSpace(i.Provider)
 	i.ClientMode = strings.ToLower(strings.TrimSpace(i.ClientMode))
+	i.WireVersion = strings.TrimSpace(i.WireVersion)
 	i.UID = strings.TrimSpace(i.UID)
 	i.EnterpriseID = strings.TrimSpace(i.EnterpriseID)
 	if i.UID == "" {

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -29,81 +31,148 @@ const (
 )
 
 type workBuddyWireProfile struct {
-	Name      string
-	Mode      string
-	Version   string
-	UserAgent string
-	IDEType   string
-	IDEName   string
-	Origin    string
-	Platform  string
+	Name          string
+	Mode          string
+	Version       string
+	VersionSource string
+	UserAgent     string
+	IDEType       string
+	IDEName       string
+	Origin        string
+	Platform      string
 }
 
 var (
 	codeBuddyCLIWireProfile = workBuddyWireProfile{
-		Name:      "codebuddy-cli-cn",
-		Mode:      oauthClientModeCLI,
-		Version:   codeBuddyCLIVersion,
-		UserAgent: clientUA,
-		IDEType:   "CLI",
-		IDEName:   "CLI",
-		Origin:    originReferer,
-		Platform:  loginPlatformCLI,
+		Name:          "codebuddy-cli-cn",
+		Mode:          oauthClientModeCLI,
+		Version:       codeBuddyCLIVersion,
+		VersionSource: "builtin",
+		UserAgent:     clientUA,
+		IDEType:       "CLI",
+		IDEName:       "CLI",
+		Origin:        originReferer,
+		Platform:      loginPlatformCLI,
 	}
 	workBuddyCNWireProfile = workBuddyWireProfile{
-		Name:      "workbuddy-macos-cn",
-		Mode:      oauthClientModeWorkBuddy,
-		Version:   workBuddyCNVersion,
-		UserAgent: workBuddyDesktopUACN,
-		IDEType:   "WorkBuddy",
-		IDEName:   "WorkBuddy",
-		Origin:    "https://www.workbuddy.cn",
-		Platform:  loginPlatformCN,
+		Name:          "workbuddy-macos-cn",
+		Mode:          oauthClientModeWorkBuddy,
+		Version:       workBuddyCNVersion,
+		VersionSource: "builtin",
+		UserAgent:     workBuddyDesktopUACN,
+		IDEType:       "WorkBuddy",
+		IDEName:       "WorkBuddy",
+		Origin:        "https://www.workbuddy.cn",
+		Platform:      loginPlatformCN,
 	}
 	workBuddyGlobalWireProfile = workBuddyWireProfile{
-		Name:      "workbuddy-macos-global",
-		Mode:      oauthClientModeWorkBuddy,
-		Version:   workBuddyGlobalVersion,
-		UserAgent: workBuddyDesktopUAGlobal,
-		IDEType:   "WorkBuddy",
-		IDEName:   "WorkBuddy",
-		Origin:    originRefererGlobal,
-		Platform:  loginPlatformGlobal,
+		Name:          "workbuddy-macos-global",
+		Mode:          oauthClientModeWorkBuddy,
+		Version:       workBuddyGlobalVersion,
+		VersionSource: "builtin",
+		UserAgent:     workBuddyDesktopUAGlobal,
+		IDEType:       "WorkBuddy",
+		IDEName:       "WorkBuddy",
+		Origin:        originRefererGlobal,
+		Platform:      loginPlatformGlobal,
 	}
 )
+
+var strictWireVersion = regexp.MustCompile(`^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$`)
+
+func normalizeWireVersionOverride(name, value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	trimmed := strings.TrimSpace(value)
+	if value != trimmed || len(value) > 20 || !strictWireVersion.MatchString(value) {
+		return "", errors.New(name + " must be an exact three-component dotted numeric version")
+	}
+	return value, nil
+}
+
+func resolvedWireProfile(base workBuddyWireProfile, override string) workBuddyWireProfile {
+	if override == "" {
+		return base
+	}
+	base.Version = override
+	base.VersionSource = "config_override"
+	if base.Mode == oauthClientModeCLI {
+		base.UserAgent = "CLI/" + override + " CodeBuddy/" + override
+	} else {
+		base.UserAgent = "WorkBuddy/" + override + " WorkBuddy/" + override
+	}
+	return base
+}
+
+type resolvedWireProfiles struct {
+	cli    workBuddyWireProfile
+	cn     workBuddyWireProfile
+	global workBuddyWireProfile
+}
+
+func currentResolvedWireProfiles() resolvedWireProfiles {
+	cfg := featureRuntime.Load()
+	cliVersion, cnVersion, globalVersion := "", "", ""
+	if cfg != nil {
+		// featureRuntime snapshots are immutable after atomic publication. Read the
+		// three scalar overrides from one pointer so diagnostics and multi-profile
+		// decisions cannot straddle a concurrent reconfigure.
+		cliVersion = cfg.wireVersionCLI
+		cnVersion = cfg.wireVersionCNDesktop
+		globalVersion = cfg.wireVersionGlobal
+	}
+	return resolvedWireProfiles{
+		cli:    resolvedWireProfile(codeBuddyCLIWireProfile, cliVersion),
+		cn:     resolvedWireProfile(workBuddyCNWireProfile, cnVersion),
+		global: resolvedWireProfile(workBuddyGlobalWireProfile, globalVersion),
+	}
+}
+
+func resolvedCodeBuddyCLIProfile() workBuddyWireProfile {
+	return currentResolvedWireProfiles().cli
+}
+
+func resolvedWorkBuddyCNProfile() workBuddyWireProfile {
+	return currentResolvedWireProfiles().cn
+}
+
+func resolvedWorkBuddyGlobalProfile() workBuddyWireProfile {
+	return currentResolvedWireProfiles().global
+}
 
 func wireProfileForStoredAuth(sa *storedAuth) workBuddyWireProfile {
 	if sa != nil && isGlobalDomain(sa.Auth.Domain) {
 		// Global tokens can only be minted by the WorkBuddy AI flow.
-		return workBuddyGlobalWireProfile
+		return resolvedWorkBuddyGlobalProfile()
 	}
 	if sa != nil && sa.Auth.ClientMode == oauthClientModeWorkBuddy {
-		return workBuddyCNWireProfile
+		return resolvedWorkBuddyCNProfile()
 	}
 	// Legacy CN files predate clientMode. Their actual historical chat profile
 	// was CLI, so keep that deterministic fallback instead of consulting mutable
 	// global config and changing identity after a reload.
-	return codeBuddyCLIWireProfile
+	return resolvedCodeBuddyCLIProfile()
 }
 
 func wireProfileForLogin(mode, region string) workBuddyWireProfile {
 	if mode != oauthClientModeWorkBuddy {
-		return codeBuddyCLIWireProfile
+		return resolvedCodeBuddyCLIProfile()
 	}
 	if normalizeOAuthLoginRegion(region) == oauthLoginRegionGlobal {
-		return workBuddyGlobalWireProfile
+		return resolvedWorkBuddyGlobalProfile()
 	}
-	return workBuddyCNWireProfile
+	return resolvedWorkBuddyCNProfile()
 }
 
 func catalogWireProfileForRealm(sa *storedAuth, realm workBuddyRealm) workBuddyWireProfile {
 	if realm == workBuddyRealmGlobal {
-		return workBuddyGlobalWireProfile
+		return resolvedWorkBuddyGlobalProfile()
 	}
 	if sa != nil && sa.Auth.ClientMode == oauthClientModeWorkBuddy {
-		return workBuddyCNWireProfile
+		return resolvedWorkBuddyCNProfile()
 	}
-	return codeBuddyCLIWireProfile
+	return resolvedCodeBuddyCLIProfile()
 }
 
 func oauthProfileForStoredAuth(sa *storedAuth) oauthRequestProfile {
@@ -112,7 +181,38 @@ func oauthProfileForStoredAuth(sa *storedAuth) oauthRequestProfile {
 	if sa != nil && isGlobalDomain(sa.Auth.Domain) {
 		region = oauthLoginRegionGlobal
 	}
-	return oauthProfileForModeRegion(profile.Mode, region)
+	return oauthRequestProfileFromWire(profile, region)
+}
+
+type wireProfileDiagnostic struct {
+	Realm         string `json:"realm"`
+	ClientMode    string `json:"client_mode"`
+	Profile       string `json:"profile"`
+	Version       string `json:"version"`
+	VersionSource string `json:"version_source"`
+}
+
+func resolvedWireProfileDiagnostics() []wireProfileDiagnostic {
+	resolved := currentResolvedWireProfiles()
+	profiles := []struct {
+		realm   string
+		profile workBuddyWireProfile
+	}{
+		{realm: "cn", profile: resolved.cli},
+		{realm: "cn", profile: resolved.cn},
+		{realm: "global", profile: resolved.global},
+	}
+	out := make([]wireProfileDiagnostic, 0, len(profiles))
+	for _, item := range profiles {
+		out = append(out, wireProfileDiagnostic{
+			Realm:         item.realm,
+			ClientMode:    item.profile.Mode,
+			Profile:       item.profile.Name,
+			Version:       item.profile.Version,
+			VersionSource: item.profile.VersionSource,
+		})
+	}
+	return out
 }
 
 func applyWireProfileHeaders(req *http.Request, profile workBuddyWireProfile) {

@@ -1,8 +1,9 @@
 package main
 
 import (
-	"crypto/rand"
+	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -38,43 +39,60 @@ type conversationIdentity struct {
 // chat-only request identity. Conversation and turn IDs remain stable for the
 // same downstream session/turn; transport request and message IDs remain fresh
 // for each retry, matching the real WorkBuddy client lifecycle.
-func backendChatHeaders(req *http.Request, sa *storedAuth, body []byte, metadata map[string]any, inbound http.Header) {
-	backendHeaders(req, sa)
+func backendChatHeaders(req *http.Request, sa *storedAuth, body []byte, metadata map[string]any, inbound http.Header) error {
+	profile := wireProfileForStoredAuth(sa)
+	identity, err := deriveConversationIdentityWithProfile(sa, profile, body, metadata, inbound)
+	if err != nil {
+		return err
+	}
+	backendHeadersWithProfile(req, sa, profile)
 	applyWireChatIntentHeaders(req)
-	identity := deriveConversationIdentity(sa, body, metadata, inbound)
 	req.Header.Set("X-Request-ID", identity.RequestID)
 	req.Header.Set("X-Conversation-ID", identity.ConversationID)
 	req.Header.Set("X-Conversation-Request-ID", identity.ConversationRequestID)
 	req.Header.Set("X-Conversation-Message-ID", identity.ConversationMessageID)
 	req.Header.Set("acp-connection-id", identity.ACPConnectionID)
+	return nil
 }
 
-func deriveConversationIdentity(sa *storedAuth, body []byte, metadata map[string]any, headers http.Header) conversationIdentity {
-	namespace := accountIdentityNamespace(sa)
+func deriveConversationIdentity(sa *storedAuth, body []byte, metadata map[string]any, headers http.Header) (conversationIdentity, error) {
+	return deriveConversationIdentityWithProfile(sa, wireProfileForStoredAuth(sa), body, metadata, headers)
+}
+
+func deriveConversationIdentityWithProfile(sa *storedAuth, profile workBuddyWireProfile, body []byte, metadata map[string]any, headers http.Header) (conversationIdentity, error) {
+	secret, err := currentInstallationSecret()
+	if err != nil {
+		return conversationIdentity{}, errInstallationIdentity
+	}
+	namespace := accountIdentityNamespaceWithProfile(sa, profile)
 	conversationKey, turnKey := requestConversationKeys(body, metadata, headers)
 	if conversationKey == "" {
 		conversationKey = "fallback:" + randomHex(16)
 	}
-	conversationID := stableWorkBuddyID("conversation", namespace, conversationKey)
+	conversationID := stableWorkBuddyID(secret, "conversation", namespace, conversationKey)
 	if turnKey == "" {
 		turnKey = randomHex(16)
 	}
 	return conversationIdentity{
 		RequestID:             randomWorkBuddyUUID(),
 		ConversationID:        conversationID,
-		ConversationRequestID: stableWorkBuddyID("turn", namespace, conversationID, turnKey),
+		ConversationRequestID: stableWorkBuddyID(secret, "turn", namespace, conversationID, turnKey),
 		ConversationMessageID: randomWorkBuddyUUID(),
-		ACPConnectionID:       stableWorkBuddyID("acp-connection", namespace, conversationKey),
-	}
+		ACPConnectionID:       stableWorkBuddyID(secret, "acp-connection", namespace, conversationKey),
+	}, nil
 }
 
 func accountIdentityNamespace(sa *storedAuth) string {
+	return accountIdentityNamespaceWithProfile(sa, wireProfileForStoredAuth(sa))
+}
+
+func accountIdentityNamespaceWithProfile(sa *storedAuth, profile workBuddyWireProfile) string {
 	if sa == nil {
 		return "anonymous"
 	}
 	parts := []string{
 		strings.ToLower(strings.TrimSpace(sa.Auth.Domain)),
-		wireProfileForStoredAuth(sa).Mode,
+		profile.Mode,
 		strings.TrimSpace(sa.Account.UID),
 		strings.TrimSpace(sa.Account.EnterpriseID),
 	}
@@ -116,15 +134,17 @@ func latestUserTurnKey(body []byte) string {
 }
 
 func latestUserTurnKeyFromObject(obj map[string]any) string {
-	messages := messageList(obj)
-	for index := len(messages) - 1; index >= 0; index-- {
-		message, _ := messages[index].(map[string]any)
+	ordinal := 0
+	latest := ""
+	for _, raw := range messageList(obj) {
+		message, _ := raw.(map[string]any)
 		role, _ := message["role"].(string)
 		if strings.EqualFold(strings.TrimSpace(role), "user") {
-			return fmt.Sprintf("user:%d:%s", index, jsonDigest(message["content"]))
+			latest = fmt.Sprintf("user:%d:%s", ordinal, jsonDigest(message["content"]))
+			ordinal++
 		}
 	}
-	return ""
+	return latest
 }
 
 func firstUserContent(obj map[string]any) any {
@@ -162,22 +182,21 @@ func jsonDigest(value any) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-func stableWorkBuddyID(parts ...string) string {
-	hash := sha256.New()
+func stableWorkBuddyID(secret [installationSecretBytes]byte, parts ...string) string {
+	mac := hmac.New(sha256.New, secret[:])
+	_, _ = mac.Write([]byte("workbuddy-stable-id-v1"))
+	var length [4]byte
 	for _, part := range parts {
-		hash.Write([]byte{0})
-		hash.Write([]byte(part))
+		binary.BigEndian.PutUint32(length[:], uint32(len(part)))
+		_, _ = mac.Write(length[:])
+		_, _ = mac.Write([]byte(part))
 	}
-	raw := append([]byte(nil), hash.Sum(nil)[:16]...)
+	raw := append([]byte(nil), mac.Sum(nil)[:16]...)
 	return formatWorkBuddyUUID(raw)
 }
 
 func randomWorkBuddyUUID() string {
-	raw := make([]byte, 16)
-	if _, err := rand.Read(raw); err != nil {
-		return stableWorkBuddyID("random-fallback", randomHex(16))
-	}
-	return formatWorkBuddyUUID(raw)
+	return formatWorkBuddyUUID(randomBytes(16))
 }
 
 func formatWorkBuddyUUID(raw []byte) string {

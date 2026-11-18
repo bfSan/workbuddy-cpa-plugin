@@ -248,13 +248,18 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	if err == nil {
 		_, err = workBuddyRealmFromAccessToken(sa.Auth.AccessToken)
 	}
+	// Bind the resolved wire profile, cache identity and config generation under
+	// one read lock. A concurrent reconfigure cannot pair an old version hash
+	// with a new generation (or vice versa).
+	r.configCommitMu.RLock()
+	configGeneration := r.configGeneration.Load()
 	var identity modelAuthIdentity
+	var profile workBuddyWireProfile
 	if err == nil {
-		identity, err = modelAuthIdentityFor(req.AuthID, sa)
+		profile = wireProfileForStoredAuth(sa)
+		identity, err = modelAuthIdentityForProfile(req.AuthID, sa, profile)
 	}
 	if err != nil {
-		r.configCommitMu.RLock()
-		configGeneration := r.configGeneration.Load()
 		key := modelGenerationKey{Config: configGeneration}
 		slot.mu.Lock()
 		if slot.key != key {
@@ -276,8 +281,6 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	}
 
 	identitySHA256 := identity.sha256()
-	r.configCommitMu.RLock()
-	configGeneration := r.configGeneration.Load()
 	var configuredModels []string
 	if features := currentFeatureRuntime(); features != nil {
 		configuredModels = features.configuredModels
@@ -364,7 +367,7 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	modelFailure := modelErrorNone
 	var identityWaits []<-chan struct{}
 	reloadCache := false
-	catalog, err := fetchWorkBuddyCatalog(sa, req.HostCallbackID, r.do)
+	catalog, err := fetchWorkBuddyCatalogWithProfile(sa, profile, req.HostCallbackID, r.do)
 	if err != nil {
 		modelFailure = workBuddyModelErrorCode(err)
 		identityWaits = r.settleIdentityCall(identitySlot, identityCall)

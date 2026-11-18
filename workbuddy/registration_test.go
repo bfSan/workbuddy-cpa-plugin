@@ -57,6 +57,21 @@ func TestRegistrationExposesForkFusionConfig(t *testing.T) {
 			t.Fatalf("%s type = %q, want %q", name, field.Type, wantType)
 		}
 	}
+	for _, name := range []string{"wire_version_cli", "wire_version_cn_desktop", "wire_version_global_desktop"} {
+		field, ok := got[name]
+		if !ok {
+			t.Fatalf("missing %s config field", name)
+		}
+		if field.Type != pluginapi.ConfigFieldTypeString {
+			t.Fatalf("%s type = %q, want string", name, field.Type)
+		}
+		description := strings.ToLower(field.Description)
+		for _, required := range []string{"x.y.z", "empty", "built-in", "never", "latest"} {
+			if !strings.Contains(description, required) {
+				t.Errorf("%s description missing %q: %q", name, required, field.Description)
+			}
+		}
+	}
 	mode, ok := got["oauth_client_mode"]
 	if !ok {
 		t.Fatal("missing oauth_client_mode config field")

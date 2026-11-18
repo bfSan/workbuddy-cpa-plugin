@@ -91,6 +91,73 @@ func TestModelRuntimeFreshBootstrapReady(t *testing.T) {
 	}
 }
 
+func TestModelRuntimeBindsWireIdentityAndGenerationUnderCommitLock(t *testing.T) {
+	oldFeatures := currentFeatureRuntime()
+	t.Cleanup(func() { featureRuntime.Store(oldFeatures) })
+	before, err := parseFeatureRuntime([]byte("wire_version_cli: 2.200.1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := parseFeatureRuntime([]byte("wire_version_cli: 2.201.0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(before)
+	store := newModelStore(t.TempDir())
+	var sawVersion atomic.Value
+	runtime := newModelRuntime(store, func(req *http.Request, _ string) (*hostHTTPResponse, error) {
+		if req.URL.Host == "copilot.tencent.com" {
+			sawVersion.Store(req.Header.Get("X-IDE-Version"))
+			return modelRuntimeFreshWorkBuddyResponse(), nil
+		}
+		return modelRuntimeFreshMetadataResponse(), nil
+	})
+	sa := syntheticStoredAuth(t, workBuddyRealmCN)
+	sa.Auth.ClientMode = oauthClientModeCLI
+	req := authModelRequestWire{
+		AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-atomic-wire", StorageJSON: mustJSON(sa)},
+		HostCallbackID:   "callback-atomic-wire",
+	}
+
+	// Hold the writer lock before ensureForAuth starts. The correct implementation
+	// cannot resolve identity/profile until the new snapshot and generation are
+	// published under this lock. The former implementation resolved the old
+	// identity first and only then blocked while reading generation.
+	runtime.configCommitMu.Lock()
+	started := make(chan struct{})
+	done := make(chan modelReadinessSnapshot, 1)
+	go func() {
+		close(started)
+		done <- runtime.ensureForAuth(req)
+	}()
+	<-started
+	time.Sleep(20 * time.Millisecond)
+	featureRuntime.Store(after)
+	runtime.configGeneration.Add(1)
+	runtime.configCommitMu.Unlock()
+	got := <-done
+	if got.State != modelReady {
+		t.Fatalf("snapshot = %#v", got)
+	}
+	if version, _ := sawVersion.Load().(string); version != "2.201.0" {
+		t.Fatalf("catalog request version = %q", version)
+	}
+	newIdentity, err := modelAuthIdentityForProfile("auth-atomic-wire", sa, resolvedWireProfile(codeBuddyCLIWireProfile, "2.201.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldIdentity, err := modelAuthIdentityForProfile("auth-atomic-wire", sa, resolvedWireProfile(codeBuddyCLIWireProfile, "2.200.1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.loadModels(newIdentity.sha256(), workBuddyRealmCN); err != nil || !found {
+		t.Fatalf("new-version cache found=%v err=%v", found, err)
+	}
+	if _, found, err := store.loadModels(oldIdentity.sha256(), workBuddyRealmCN); err != nil || found {
+		t.Fatalf("old-version cache found=%v err=%v", found, err)
+	}
+}
+
 func TestModelRuntimeFreshBootstrapFailuresFailClosed(t *testing.T) {
 	tests := []struct {
 		name        string

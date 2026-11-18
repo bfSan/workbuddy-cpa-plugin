@@ -629,6 +629,43 @@ func TestParseWorkBuddyV3ConfigServesPresetAsItself(t *testing.T) {
 }
 
 // Catalog discovery must keep one account on its persisted client family.
+func TestFetchWorkBuddyCatalogWithProfileIgnoresConcurrentRuntimeReload(t *testing.T) {
+	oldFeatures := currentFeatureRuntime()
+	t.Cleanup(func() { featureRuntime.Store(oldFeatures) })
+	before, err := parseFeatureRuntime([]byte("wire_version_cli: 2.200.1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(before)
+	sa := syntheticStoredAuth(t, workBuddyRealmCN)
+	sa.Auth.ClientMode = oauthClientModeCLI
+	profile := wireProfileForStoredAuth(sa)
+	identity, err := modelAuthIdentityForProfile("auth-frozen", sa, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := parseFeatureRuntime([]byte("wire_version_cli: 2.201.0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(after)
+	do := func(req *http.Request, _ string) (*hostHTTPResponse, error) {
+		if got := req.Header.Get("X-IDE-Version"); got != "2.200.1" {
+			t.Fatalf("catalog request version = %q", got)
+		}
+		if got := req.Header.Get("User-Agent"); got != "CLI/2.200.1 CodeBuddy/2.200.1" {
+			t.Fatalf("catalog request User-Agent = %q", got)
+		}
+		return modelRuntimeFreshWorkBuddyResponse(), nil
+	}
+	if _, err := fetchWorkBuddyCatalogWithProfile(sa, profile, "callback-frozen", do); err != nil {
+		t.Fatal(err)
+	}
+	if identity.WireVersion != "2.200.1" {
+		t.Fatalf("cache identity version = %q", identity.WireVersion)
+	}
+}
+
 func TestFetchWorkBuddyCatalogUsesOnePersistedIdentity(t *testing.T) {
 	var sawUA []string
 	do := func(req *http.Request, _ string) (*hostHTTPResponse, error) {

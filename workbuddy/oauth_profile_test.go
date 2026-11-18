@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -190,6 +191,61 @@ func TestDesktopLoginKeepsStartProfileAndSessionAcrossReconfigure(t *testing.T) 
 		if got := account.Header.Get(key); got != "true" {
 			t.Errorf("account %s = %q, want true", key, got)
 		}
+	}
+}
+
+func TestPendingOAuthRecordFreezesResolvedWireVersion(t *testing.T) {
+	oldFeatures := currentFeatureRuntime()
+	t.Cleanup(func() { featureRuntime.Store(oldFeatures) })
+	startConfig, err := parseFeatureRuntime([]byte("wire_version_cn_desktop: 5.10.0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(startConfig)
+	started := oauthProfileForModeRegion(oauthClientModeWorkBuddy, oauthLoginRegionCN)
+	lc := &loginCtx{profile: started}
+	record := oauthRecord("state", lc)
+	if record.ClientVersion != "5.10.0" {
+		t.Fatalf("record version = %q", record.ClientVersion)
+	}
+
+	reloadConfig, err := parseFeatureRuntime([]byte("wire_version_cn_desktop: 5.11.0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(reloadConfig)
+	restored := oauthProfileWithVersion(oauthProfileForModeRegion(record.Mode, record.Region), record.ClientVersion)
+	if restored.clientVersion != "5.10.0" || restored.userAgent != "WorkBuddy/5.10.0 WorkBuddy/5.10.0" {
+		t.Fatalf("restored flow drifted after reload: %#v", restored)
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://example.test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyOAuthProfileHeaders(req, restored)
+	if got := req.Header.Get("User-Agent"); got != restored.userAgent {
+		t.Fatalf("frozen User-Agent = %q, want %q", got, restored.userAgent)
+	}
+}
+
+func TestLegacyPendingRecordWithoutFrozenVersionRequiresRestart(t *testing.T) {
+	now := time.Now()
+	legacy := &oauthPendingRecord{
+		Version: 1,
+		State:   "legacy-state",
+		Mode:    oauthClientModeWorkBuddy,
+		Region:  oauthLoginRegionCN,
+		Created: now,
+		Expires: now.Add(loginTTL),
+	}
+	if validOAuthPendingRecord(legacy) {
+		t.Fatal("legacy v1 pending record was accepted without a frozen client version")
+	}
+	current := *legacy
+	current.Version = 2
+	current.ClientVersion = workBuddyCNVersion
+	if !validOAuthPendingRecord(&current) {
+		t.Fatal("valid v2 pending record was rejected")
 	}
 }
 

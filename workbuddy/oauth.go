@@ -172,7 +172,10 @@ func oauthProfileForMode(mode string) oauthRequestProfile {
 }
 
 func oauthProfileForModeRegion(mode, region string) oauthRequestProfile {
-	wire := wireProfileForLogin(mode, region)
+	return oauthRequestProfileFromWire(wireProfileForLogin(mode, region), region)
+}
+
+func oauthRequestProfileFromWire(wire workBuddyWireProfile, region string) oauthRequestProfile {
 	if wire.Mode == oauthClientModeWorkBuddy {
 		base := upstreamBaseCN
 		if normalizeOAuthLoginRegion(region) == oauthLoginRegionGlobal {
@@ -199,11 +202,21 @@ func oauthProfileForModeRegion(mode, region string) oauthRequestProfile {
 	}
 }
 
+func oauthProfileWithVersion(profile oauthRequestProfile, version string) oauthRequestProfile {
+	profile.clientVersion = version
+	if profile.mode == oauthClientModeCLI {
+		profile.userAgent = "CLI/" + version + " CodeBuddy/" + version
+	} else {
+		profile.userAgent = "WorkBuddy/" + version + " WorkBuddy/" + version
+	}
+	return profile
+}
+
 func applyOAuthProfileHeaders(req *http.Request, profile oauthRequestProfile) {
 	commonHeaders(req)
-	if profile.mode != oauthClientModeWorkBuddy {
-		return
-	}
+	// Always overwrite the common CLI defaults from the already-resolved flow
+	// profile. This also keeps an in-flight persisted login on its frozen version
+	// if config is reloaded between auth/state and auth/token.
 	req.Header.Set("User-Agent", profile.userAgent)
 	req.Header.Set("Origin", profile.origin)
 	req.Header.Set("Referer", profile.origin+"/")
@@ -317,7 +330,7 @@ func decorateDesktopAuthURL(rawURL, clientVersion string) (string, error) {
 	if clientVersion != "" {
 		query.Set("version", clientVersion)
 	} else {
-		query.Set("version", loginVersionCN)
+		query.Set("version", resolvedWorkBuddyCNProfile().Version)
 	}
 	u.RawQuery = query.Encode()
 	return u.String(), nil

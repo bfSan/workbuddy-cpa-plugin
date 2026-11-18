@@ -615,6 +615,16 @@ func validateModelFacts(models []modelFacts) ([]modelFacts, error) {
 }
 
 func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (workBuddyCatalog, error) {
+	profile := workBuddyWireProfile{}
+	if sa != nil {
+		if realm, err := workBuddyRealmFromAccessToken(sa.Auth.AccessToken); err == nil {
+			profile = catalogWireProfileForRealm(sa, realm)
+		}
+	}
+	return fetchWorkBuddyCatalogWithProfile(sa, profile, callbackID, do)
+}
+
+func fetchWorkBuddyCatalogWithProfile(sa *storedAuth, profile workBuddyWireProfile, callbackID string, do modelHTTPDo) (workBuddyCatalog, error) {
 	if sa == nil {
 		return workBuddyCatalog{}, &modelSourceError{Kind: modelSourceSchemaFailure, err: fmt.Errorf("stored auth is nil")}
 	}
@@ -633,14 +643,15 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 	ctx, cancel := context.WithTimeout(context.Background(), modelSourceRequestTimeout)
 	defer cancel()
 
-	profile := catalogWireProfileForRealm(sa, realm)
+	if profile.Name == "" || profile.Version == "" {
+		return workBuddyCatalog{}, &modelSourceError{Kind: modelSourceSchemaFailure, err: fmt.Errorf("wire profile unavailable")}
+	}
 	request := func(path string, profile workBuddyWireProfile) (*hostHTTPResponse, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 		if err != nil {
 			return nil, &modelSourceError{Kind: modelSourceSchemaFailure, err: err}
 		}
-		backendHeaders(req, sa)
-		applyWireProfileHeaders(req, profile)
+		backendHeadersWithProfile(req, sa, profile)
 		req.Header.Set("Accept", "application/json")
 		resp, err := do(req, callbackID)
 		if err != nil {

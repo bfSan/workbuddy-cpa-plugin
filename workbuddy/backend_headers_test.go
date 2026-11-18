@@ -53,7 +53,9 @@ func TestBackendHeadersStripUntrustedProviderAndSessionHeaders(t *testing.T) {
 	}
 	inbound := req.Header.Clone()
 	sa := &storedAuth{Auth: storedTokens{AccessToken: "trusted-access", Domain: "www.codebuddy.cn", ClientMode: oauthClientModeCLI}}
-	backendChatHeaders(req, sa, []byte(`{"messages":[{"role":"user","content":"hi"}]}`), nil, inbound)
+	if err := backendChatHeaders(req, sa, []byte(`{"messages":[{"role":"user","content":"hi"}]}`), nil, inbound); err != nil {
+		t.Fatal(err)
+	}
 	if got := req.Header.Get("Authorization"); got != "Bearer trusted-access" {
 		t.Fatalf("Authorization = %q", got)
 	}
@@ -76,7 +78,9 @@ func TestBackendHeadersStripUntrustedProviderAndSessionHeaders(t *testing.T) {
 func TestBackendChatHeadersAddsStableClientIdentity(t *testing.T) {
 	makeHeaders := func() http.Header {
 		req := httptest.NewRequest("POST", "https://example.com/v2/chat/completions", nil)
-		backendChatHeaders(req, &storedAuth{}, []byte(`{"messages":[{"role":"user","content":"hi"}]}`), map[string]any{"canonical_session_id": "session-1"}, nil)
+		if err := backendChatHeaders(req, &storedAuth{}, []byte(`{"messages":[{"role":"user","content":"hi"}]}`), map[string]any{"canonical_session_id": "session-1"}, nil); err != nil {
+			t.Fatal(err)
+		}
 		return req.Header
 	}
 

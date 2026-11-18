@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -78,6 +79,38 @@ func TestExecutorHTTPRequestForwardsAllowedUpstream(t *testing.T) {
 	}
 	if value := got.Header.Get("X-IDE-Version"); value != codeBuddyCLIVersion {
 		t.Fatalf("canonical X-IDE-Version = %q", value)
+	}
+}
+
+func TestExecutorHTTPChatDoesNotCallUpstreamWithoutInstallationIdentity(t *testing.T) {
+	const authID = "executor-http-no-identity"
+	installModelStatesForTest(t, map[string]modelReadinessState{authID: modelReady})
+	var fixture [installationSecretBytes]byte
+	for i := range fixture {
+		fixture[i] = byte(i + 1)
+	}
+	t.Cleanup(func() { installInstallationSecretForTest(fixture) })
+	clearInstallationSecretForTest()
+	oldClient := sharedHTTPClient()
+	defer func() { sharedClient = oldClient }()
+	httpCalls := 0
+	sharedClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		httpCalls++
+		return nil, errors.New("unexpected upstream call")
+	})}
+	storage := mustJSON(&storedAuth{Auth: storedTokens{AccessToken: "access-token", Domain: "www.codebuddy.cn"}})
+	_, err := handleMethod(pluginabi.MethodExecutorHTTPRequest, mustJSON(pluginapi.ExecutorHTTPRequest{
+		AuthID:      authID,
+		Method:      http.MethodPost,
+		URL:         upstreamBaseCN + "/v2/chat/completions",
+		Body:        []byte(`{"messages":[{"role":"user","content":"hello"}]}`),
+		StorageJSON: storage,
+	}))
+	if !errors.Is(err, errInstallationIdentity) {
+		t.Fatalf("error = %v", err)
+	}
+	if httpCalls != 0 {
+		t.Fatalf("upstream calls = %d", httpCalls)
 	}
 }
 

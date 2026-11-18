@@ -1,6 +1,6 @@
 # WorkBuddy 路由策略草案（仅文档）
 
-> 状态：设计记录，0.9.29 不修改 `staged-scheduler`、CPA 宿主或 DSH→CPA 路由。
+> 状态：设计记录，0.9.30 仍不修改 `staged-scheduler`、CPA 宿主或 DSH→CPA 路由。
 > 本文只定义后续演进边界与验收条件，不能视为已上线能力。
 
 ## 1. 当前边界

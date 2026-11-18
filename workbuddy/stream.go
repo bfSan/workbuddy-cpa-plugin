@@ -252,7 +252,9 @@ func collectUpstreamStreamWithIdentity(body []byte, sa *storedAuth, sseFramed bo
 	if err != nil {
 		return nil, 0, err
 	}
-	backendChatHeaders(httpReq, sa, body, metadata, inbound)
+	if err := backendChatHeaders(httpReq, sa, body, metadata, inbound); err != nil {
+		return nil, 0, err
+	}
 	// Compliance: route via host.http.do_stream so request-log captures the call.
 	if blocked := quotaFreezeError(authID, upstreamModel); blocked != nil {
 		return nil, 0, blocked

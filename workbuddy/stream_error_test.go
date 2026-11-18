@@ -84,6 +84,53 @@ func pumpTestRequest(t *testing.T) *http.Request {
 	return req
 }
 
+func TestExecutorChatEntrypointsDoNotCallUpstreamWithoutInstallationIdentity(t *testing.T) {
+	const authID = "executor-no-installation-identity"
+	installModelStatesForTest(t, map[string]modelReadinessState{authID: modelReady})
+	var fixture [installationSecretBytes]byte
+	for i := range fixture {
+		fixture[i] = byte(i + 1)
+	}
+	t.Cleanup(func() { installInstallationSecretForTest(fixture) })
+	clearInstallationSecretForTest()
+	oldClient := sharedHTTPClient()
+	httpCalls := 0
+	sharedClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		httpCalls++
+		return nil, errors.New("unexpected upstream call")
+	})}
+	t.Cleanup(func() { sharedClient = oldClient })
+	storage := mustJSON(&storedAuth{Auth: storedTokens{AccessToken: "access-token", Domain: "www.codebuddy.cn"}})
+	base := pluginapi.ExecutorRequest{
+		AuthID:      authID,
+		Model:       "test-model",
+		Payload:     []byte(`{"messages":[{"role":"user","content":"hello"}]}`),
+		StorageJSON: storage,
+	}
+	if _, err := handleExecExecute(mustJSON(base)); !errors.Is(err, errInstallationIdentity) {
+		t.Fatalf("execute error = %v", err)
+	}
+	if _, err := handleExecStream(mustJSON(executorStreamRequest{ExecutorRequest: base})); !errors.Is(err, errInstallationIdentity) {
+		t.Fatalf("sync stream error = %v", err)
+	}
+	calls := recordStreamHostCalls(t, nil)
+	raw, err := handleExecStream(mustJSON(executorStreamRequest{ExecutorRequest: base, StreamID: "identity-stream"}))
+	if err != nil {
+		t.Fatalf("async stream error = %v", err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
+		t.Fatalf("async stream envelope = %s err=%v", raw, err)
+	}
+	messages := nativeStreamErrors(t, *calls)
+	if len(messages) != 1 || messages[0] != errInstallationIdentity.Error() || streamCloseCallCount(*calls) != 1 {
+		t.Fatalf("async stream calls=%#v errors=%#v", *calls, messages)
+	}
+	if httpCalls != 0 {
+		t.Fatalf("upstream calls = %d", httpCalls)
+	}
+}
+
 func TestNativeStreamErrorWireUsesErrorNotPayload(t *testing.T) {
 	raw := streamErrorWire("stream-1", "Bearer secret-token failed")
 	var doc map[string]any

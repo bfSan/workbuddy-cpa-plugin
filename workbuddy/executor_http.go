@@ -52,7 +52,9 @@ func handleExecHTTPRequest(raw []byte) ([]byte, error) {
 	// headers but must not masquerade as a chat turn.
 	isChat := executorHTTPIsChat(target, sa)
 	if isChat {
-		backendChatHeaders(httpReq, sa, req.Body, nil, req.Headers)
+		if err := backendChatHeaders(httpReq, sa, req.Body, nil, req.Headers); err != nil {
+			return nil, fmt.Errorf("executor HTTP request: %w", err)
+		}
 	} else {
 		backendHeaders(httpReq, sa)
 	}

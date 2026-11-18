@@ -26,6 +26,92 @@ func TestMacWorkBuddyVersionPins(t *testing.T) {
 	}
 }
 
+func TestWireVersionOverridesAreStrictAndProfileScoped(t *testing.T) {
+	old := currentFeatureRuntime()
+	t.Cleanup(func() { featureRuntime.Store(old) })
+	cfg, err := parseFeatureRuntime([]byte("wire_version_cli: 2.200.1\nwire_version_cn_desktop: 5.10.0\nwire_version_global_desktop: 6.0.1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(cfg)
+
+	cli := resolvedCodeBuddyCLIProfile()
+	cn := resolvedWorkBuddyCNProfile()
+	global := resolvedWorkBuddyGlobalProfile()
+	for _, got := range []workBuddyWireProfile{cli, cn, global} {
+		if got.VersionSource != "config_override" {
+			t.Fatalf("%s version source = %q", got.Name, got.VersionSource)
+		}
+	}
+	if cli.Version != "2.200.1" || cli.UserAgent != "CLI/2.200.1 CodeBuddy/2.200.1" {
+		t.Fatalf("CLI override drift: %#v", cli)
+	}
+	if cn.Version != "5.10.0" || cn.UserAgent != "WorkBuddy/5.10.0 WorkBuddy/5.10.0" {
+		t.Fatalf("CN override drift: %#v", cn)
+	}
+	if global.Version != "6.0.1" || global.UserAgent != "WorkBuddy/6.0.1 WorkBuddy/6.0.1" {
+		t.Fatalf("Global override drift: %#v", global)
+	}
+	if got := oauthProfileForModeRegion(oauthClientModeWorkBuddy, oauthLoginRegionGlobal); got.clientVersion != global.Version || got.userAgent != global.UserAgent {
+		t.Fatalf("OAuth did not use resolved Global profile: %#v", got)
+	}
+}
+
+func TestWireVersionOverridesRejectNonExactVersions(t *testing.T) {
+	for _, value := range []string{"latest", "v5.9.4", "5.9", "5.9.4.1", "05.9.4", "5.-1.4", "5.9.x", "1000000.1.1", " 5.9.4"} {
+		t.Run(value, func(t *testing.T) {
+			raw := []byte("wire_version_cn_desktop: '" + value + "'\n")
+			if _, err := parseFeatureRuntime(raw); err == nil {
+				t.Fatalf("accepted invalid override %q", value)
+			}
+		})
+	}
+}
+
+func TestWireVersionOverridesRejectWrongYAMLShapesAndDuplicates(t *testing.T) {
+	for _, raw := range []string{
+		"wire_version_cli: [2, 172, 1]\n",
+		"wire_version_cn_desktop: {version: 5.9.3}\n",
+		"wire_version_global_desktop: true\n",
+		"wire_version_cli: 2.172.1\nwire_version_cli: 2.173.0\n",
+	} {
+		if _, err := parseFeatureRuntime([]byte(raw)); err == nil {
+			t.Fatalf("accepted invalid wire-version YAML: %q", raw)
+		}
+	}
+}
+
+func TestInvalidWireVersionReconfigureKeepsPublishedSnapshot(t *testing.T) {
+	old := currentFeatureRuntime()
+	t.Cleanup(func() { featureRuntime.Store(old) })
+	valid, err := parseFeatureRuntime([]byte("wire_version_cli: 2.200.1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(valid)
+	if err := configure(mustJSON(map[string]any{"config_yaml": []byte("wire_version_cli: latest\n")})); err == nil {
+		t.Fatal("invalid reconfigure unexpectedly succeeded")
+	}
+	if got := resolvedCodeBuddyCLIProfile(); got.Version != "2.200.1" || got.VersionSource != "config_override" {
+		t.Fatalf("published profile changed after invalid reconfigure: %#v", got)
+	}
+}
+
+func TestWireProfilesUseBuiltinPinsWhenOverridesEmpty(t *testing.T) {
+	old := currentFeatureRuntime()
+	t.Cleanup(func() { featureRuntime.Store(old) })
+	cfg, err := parseFeatureRuntime(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(cfg)
+	for _, profile := range []workBuddyWireProfile{resolvedCodeBuddyCLIProfile(), resolvedWorkBuddyCNProfile(), resolvedWorkBuddyGlobalProfile()} {
+		if profile.VersionSource != "builtin" {
+			t.Fatalf("%s source = %q", profile.Name, profile.VersionSource)
+		}
+	}
+}
+
 func TestWireProfileForStoredAuthUsesPersistedClientFamily(t *testing.T) {
 	cnDesktop := &storedAuth{Auth: storedTokens{Domain: "www.codebuddy.cn", ClientMode: oauthClientModeWorkBuddy}}
 	cnCLI := &storedAuth{Auth: storedTokens{Domain: "www.codebuddy.cn", ClientMode: oauthClientModeCLI}}

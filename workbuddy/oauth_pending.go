@@ -24,17 +24,18 @@ const (
 // No URLs or transports are deserialized. Mode/region select a compiled-in
 // profile; proxy policy is re-evaluated before every upstream request.
 type oauthPendingRecord struct {
-	Version int                  `json:"version"`
-	State   string               `json:"state"`
-	Mode    string               `json:"mode"`
-	Region  string               `json:"region"`
-	Created time.Time            `json:"created"`
-	Expires time.Time            `json:"expires"`
-	Cookies []oauthPendingCookie `json:"cookies,omitempty"`
-	Token   *tokenData           `json:"token,omitempty"`
-	TokenAt time.Time            `json:"token_at,omitempty"`
-	Result  *storedAuth          `json:"result,omitempty"`
-	Saved   bool                 `json:"saved,omitempty"`
+	Version       int                  `json:"version"`
+	State         string               `json:"state"`
+	Mode          string               `json:"mode"`
+	Region        string               `json:"region"`
+	ClientVersion string               `json:"client_version,omitempty"`
+	Created       time.Time            `json:"created"`
+	Expires       time.Time            `json:"expires"`
+	Cookies       []oauthPendingCookie `json:"cookies,omitempty"`
+	Token         *tokenData           `json:"token,omitempty"`
+	TokenAt       time.Time            `json:"token_at,omitempty"`
+	Result        *storedAuth          `json:"result,omitempty"`
+	Saved         bool                 `json:"saved,omitempty"`
 }
 
 type oauthPendingStore struct {
@@ -133,7 +134,11 @@ func validOAuthPendingName(name string) bool {
 }
 
 func validOAuthPendingRecord(r *oauthPendingRecord) bool {
-	if r.Version != 1 || !validOAuthState(r.State) || (r.Mode != oauthClientModeCLI && r.Mode != oauthClientModeWorkBuddy) || (r.Region != oauthLoginRegionCN && r.Region != oauthLoginRegionGlobal) || (r.Mode == oauthClientModeCLI && r.Region != oauthLoginRegionCN) {
+	if r.Version != 2 || !validOAuthState(r.State) || (r.Mode != oauthClientModeCLI && r.Mode != oauthClientModeWorkBuddy) || (r.Region != oauthLoginRegionCN && r.Region != oauthLoginRegionGlobal) || (r.Mode == oauthClientModeCLI && r.Region != oauthLoginRegionCN) {
+		return false
+	}
+	version, err := normalizeWireVersionOverride("client_version", r.ClientVersion)
+	if err != nil || version == "" || version != r.ClientVersion {
 		return false
 	}
 	now := time.Now()
@@ -153,7 +158,8 @@ func validOAuthPendingRecord(r *oauthPendingRecord) bool {
 	if r.Saved && r.Result == nil {
 		return false
 	}
-	return validOAuthPendingCookies(r.Cookies, oauthProfileForModeRegion(r.Mode, r.Region))
+	profile := oauthProfileWithVersion(oauthProfileForModeRegion(r.Mode, r.Region), r.ClientVersion)
+	return validOAuthPendingCookies(r.Cookies, profile)
 }
 
 func oauthRecord(state string, lc *loginCtx) *oauthPendingRecord {
@@ -168,7 +174,7 @@ func oauthRecord(state string, lc *loginCtx) *oauthPendingRecord {
 	if lc.created.IsZero() {
 		lc.created = time.Now()
 	}
-	rec := &oauthPendingRecord{Version: 1, State: state, Mode: profile.mode, Region: region, Created: lc.created, Expires: lc.expires, Token: lc.token, TokenAt: lc.tokenAt, Result: lc.result, Saved: lc.saved}
+	rec := &oauthPendingRecord{Version: 2, State: state, Mode: profile.mode, Region: region, ClientVersion: profile.clientVersion, Created: lc.created, Expires: lc.expires, Token: lc.token, TokenAt: lc.tokenAt, Result: lc.result, Saved: lc.saved}
 	if lc.client != nil {
 		if jar, ok := lc.client.Jar.(*oauthCookieJar); ok {
 			rec.Cookies = jar.snapshot()
@@ -239,7 +245,8 @@ func lookupOAuthPending(state string) (*loginCtx, error) {
 			}
 			// Restore without making requests, including while proxy config is blocked.
 			client := &http.Client{Jar: jar, Timeout: 30 * time.Second, Transport: sharedHTTPClient().Transport, CheckRedirect: rejectHTTPRedirect}
-			lc := &loginCtx{client: client, profile: oauthProfileForModeRegion(rec.Mode, rec.Region), created: rec.Created, expires: rec.Expires, token: rec.Token, tokenAt: rec.TokenAt, result: rec.Result, saved: rec.Saved, store: oauthPending.store, routingManaged: true}
+			profile := oauthProfileWithVersion(oauthProfileForModeRegion(rec.Mode, rec.Region), rec.ClientVersion)
+			lc := &loginCtx{client: client, profile: profile, created: rec.Created, expires: rec.Expires, token: rec.Token, tokenAt: rec.TokenAt, result: rec.Result, saved: rec.Saved, store: oauthPending.store, routingManaged: true}
 			if rec.Token != nil {
 				oauthPending.recent[state] = lc
 			} else {

@@ -22,7 +22,7 @@
 
 两个约 173–174 MiB 的 `app.asar` 含同一套 `buildVlmGatewayHeaders` / `applyGatewayHeaders`：UA 运行时构造为 `WorkBuddy/<appVersion> WorkBuddy/<appVersion>`，只有产品配置提供 `platformVersion` 时才追加可选的 `CLI/<platformVersion>`；IDE type/name 固定为 WorkBuddy，IDE version 来自 app version；企业账号同时发送 tenant ID；聊天还使用 private-data、ACP connection、`x-codebuddy-request`、W3C/B3 trace 和 UUID request/message ID。静态代码命中 `X-Agent-Intent`、`X-Agent-Purpose`，未命中 `X-Agent-Type`，所以插件不会额外发送后者。`platformVersion` 未能从本次静态证据中确定，因此桌面 profile 省略可选 CLI 段，不猜测填入 standalone CLI 版本；独立 CodeBuddy CLI profile 仍使用另行审查过的 `2.172.1`。
 
-插件 0.9.29 将这两个版本作为各自 realm 的单一版本源。CodeBuddy CLI 回退固定为已经审查过的官方包版本 `2.172.1`。版本不会后台自动追 latest：只更新 UA 而没有同步协议行为，比使用较旧但自洽的固定版本更危险。本版也不提供运行时 version override 或独立 profile diagnostics API；版本变更必须基于新证据同步修改中央 profile、测试并重新发布，避免配置把 OAuth/catalog/chat 拆成不一致版本。
+插件 0.9.29 将这两个版本作为各自 realm 的单一版本源。CodeBuddy CLI 回退固定为已经审查过的官方包版本 `2.172.1`。0.9.30 在保留这三个默认 pin 的基础上，增加彼此独立的 `wire_version_cli`、`wire_version_cn_desktop`、`wire_version_global_desktop` override；只接受无前后空白、无 `v` 前缀、每段无多余前导零的三段数字 `x.y.z`，空字符串才表示继续使用 built-in pin。它不会查找或后台跟随 latest。override 在一次 immutable runtime snapshot 中校验并发布，同时重建对应 UA / `X-IDE-Version`，OAuth、refresh、catalog 和 chat 继续从同一 resolved profile 读取；进行中的 OAuth flow 会把启动时版本写入 checkpoint，配置重载或重启也不会在 flow 中途换版本。catalog cache identity 包含 resolved version，避免新旧 profile 共用目录结果。只读 management 路由 `/plugins/workbuddy/wire-profiles` 仅返回 realm、client mode、profile、version/source 与 installation identity 的安全状态，不返回 token、UID、enterprise/session ID、raw header、secret 或本地路径。
 
 ## 2. 已实现：应用层 wire profile
 
@@ -47,9 +47,17 @@
 - `acp-connection-id`：同一 downstream session 稳定；
 - W3C/B3 trace：每个 HTTP 尝试重新生成。
 
-所有 ID 使用 app 中 `randomUUID()` 一致的 lowercase RFC 4122 v4 外形。稳定 ID 由 SHA-256 前 128 bit 设置 v4/variant 位后格式化；随机 request/message ID 使用系统 CSPRNG，运行期系统随机源异常时使用启动 CSPRNG 密钥驱动的进程内 HMAC counter，启动时无法取得安全熵则拒绝加载。优先使用 CPA 提供的 canonical / execution / derived session metadata，以及显式 session headers；没有时才对第一条 user 内容做 SHA-256 摘要。turn key 同时包含 user message ordinal，因此同一会话内重复完全相同文本也不会复用上一轮 ID。派生出的 conversation/turn/ACP ID 值本身不直接嵌入原始 prompt、session 文本、UID 或 token；正常认证/账号 headers 仍会按协议发送 `Authorization`、`X-User-Id`、`X-Enterprise-Id` 等必要值。
+所有 ID 使用 app 中 `randomUUID()` 一致的 lowercase RFC 4122 v4 外形。0.9.30 的 conversation/turn/ACP 稳定 ID 使用 installation secret 驱动的 HMAC-SHA256，包含独立用途域与长度前缀，取前 128 bit 后设置 v4/variant 位；随机 request/message ID 使用系统 CSPRNG，运行期系统随机源异常时使用启动 CSPRNG 密钥驱动的进程内 HMAC counter，启动时无法取得安全熵则拒绝加载。优先使用 CPA 提供的 canonical / execution / derived session metadata，以及显式 session headers；没有时才对第一条 user 内容做 SHA-256 摘要。turn key 的 ordinal 只计 user messages，因此插入 system/developer/tool/assistant wrapper 不会把同一 user turn 重新编号，而同一会话内后续重复完全相同 user 文本仍会得到新 ordinal。派生出的 conversation/turn/ACP ID 值本身不直接嵌入原始 prompt、session 文本、UID 或 token；正常认证/账号 headers 仍会按协议发送 `Authorization`、`X-User-Id`、`X-Enterprise-Id` 等必要值。
 
-0.9.29 的稳定 ID namespace 尚未引入持久 installation/device secret：它保证同一输入的稳定性和线上的 UUID 外形，但不把本地安装身份作为 HMAC 盐。后续若增加该能力，必须同时定义 secret 的原子持久化、权限、迁移、备份与显式 reset 语义；不能临时生成后导致重启即更换 conversation identity。
+### 2.2.1 Installation secret 生命周期
+
+- lifecycle register/reconfigure 不携带 HostConfigSummary，插件不会因此退回 user-global 路径。首次携带绝对 `Host.AuthDir` 的 model/auth RPC 会在该实例的 `Host.AuthDir/.workbuddy-installation-identity/installation.key` 创建 32-byte raw secret；chat 在此之前 fail closed。首次 scope 在进程内固定，后续发现不同 AuthDir 会失败并要求重启，不能热切换 namespace。同一 Unix 用户的独立 CPA AuthDir 因而不会自动共享 key。
+- Unix identity 子目录必须是当前 euid 所有的 `0700` 目录，key 与 lock 必须是当前 euid 所有、单硬链接的 `0600` regular file。读取使用 pinned directory + `openat(O_NOFOLLOW)`；创建使用 pinned/no-follow AuthDir、`mkdirat`、parent fsync、exclusive temp、file fsync、atomic rename 和 identity-directory fsync。非 Unix 在有等价 ACL/no-follow/lock 实现前 fail closed，不退化为临时 key。
+- key 只驻留本地文件和进程内存，不写 token/auth JSON、日志、upstream header/body 或 diagnostics。携带 AuthDir 的 model/auth RPC 无法安全读取/创建 key 时直接失败；chat header 在 key 未 ready 时拒绝构造，因此不会访问 upstream，也不使用 unsalted 或 process-only fallback。lifecycle configure 本身不携带 AuthDir，文档不把该路径描述为全局 proxy transport blocked。
+- 从已发布 0.9.29 升到该实现时，稳定 conversation/turn/ACP ID 会一次性切换到新的 HMAC namespace；access/refresh token、账号文件和 billing machine/session profile 不改变。升级时已存在的 OAuth pending v1 checkpoint 没有 frozen client version，会被安全拒绝并要求重新登录；不会把当前 override 套到旧 flow。升级后保持该文件即可跨重启稳定。
+- 备份/恢复必须在 CPA 停止时完成并保持 `0600`；恢复同一个 key 等价于恢复同一 installation namespace。不要把一个 key 共享给多个独立实例，除非明确要克隆该 namespace。
+- reset 只支持离线操作：停止 CPA，备份后删除 **仅** `Host.AuthDir/.workbuddy-installation-identity/installation.key`，再启动生成新 key。若迁移 AuthDir，要保持 namespace，必须在停机时连同整个 `.workbuddy-installation-identity` 目录按原权限迁移；否则会视为新实例。不存在在线 reset API。reset 会同时改变该安装的 conversation、turn 与 ACP stable ID，不能用于日常轮换或规避服务端策略；账号凭据不会因此删除。
+- `/wire-profiles` 只报告 `ready`、`hmac-sha256-v1`、`owner_only_auth_scope` 与 `offline_only`，不返回 AuthDir、key fingerprint、创建时间或路径，以免额外形成可关联标识。
 
 ### 2.3 请求形状
 
@@ -103,7 +111,7 @@ CPA 的 `HostHTTPClient` 最终使用宿主 Go transport。provider 插件能控
 - Header 编码顺序；
 - TLS session ticket / connection coalescing 行为。
 
-因此 0.9.29 只解决应用层一致性，不能声称等价于 WorkBuddy macOS 的 TLS 指纹。
+因此 0.9.30 仍只解决应用层一致性，不能声称等价于 WorkBuddy macOS 的 TLS 指纹。
 
 ### 4.1 推荐的可选 sidecar 架构
 
@@ -153,7 +161,10 @@ workbuddy-cpa-plugin
 ### 离线（必须）
 
 - golden header matrix：CN / Global / CLI，OAuth / refresh / catalog / chat；
-- 同 session、同 turn、下一 turn、跨 account 的 ID 生命周期测试；
+- 同 session、同 turn、下一 turn、跨 account/installation secret 的 ID 生命周期测试；
+- installation key 的 0700/0600、symlink/weak-file 拒绝、原子重载、entropy failure 与 offline reset 测试；
+- user-only ordinal 必须不受 system/developer/tool/assistant wrapper 插入影响；
+- 三个 version override 的 strict parse、UA/IDE/OAuth 一致性、in-flight OAuth freeze、cache 隔离与 diagnostics 脱敏测试；
 - tool schema、历史 tool refs、流式拆分工具名 round trip；
 - 非聊天请求不得出现 conversation/agent intent headers；
 - 恶意/陈旧 raw session、refresh/cookie、profile、trace headers 不得透传；

@@ -59,7 +59,7 @@ manual-disable precedence, retry boundaries and diagnostic APIs. Client-wire
 consistency, transport limits and the optional sidecar roadmap are documented
 in [fingerprint compatibility](docs/fingerprint-compatibility.md). The future
 session-lease/sticky-egress design is recorded in the
-[routing strategy draft](docs/routing-strategy.md); 0.9.29 does not change
+[routing strategy draft](docs/routing-strategy.md); 0.9.30 does not change
 `staged-scheduler`.
 
 ## Quickstart
@@ -132,6 +132,13 @@ plugins:
       # Missing, null, or [] keeps dynamic WorkBuddy discovery.
       models: []
 
+      # Optional exact wire-version overrides. Only x.y.z is accepted; empty
+      # retains the audited built-in pins (CLI 2.172.1 / CN 5.9.3 / Global 5.9.4).
+      # These never auto-follow latest and are separate client profiles.
+      wire_version_cli: ""
+      wire_version_cn_desktop: ""
+      wire_version_global_desktop: ""
+
       # Optional plugin-level proxy for every HTTP request initiated by WorkBuddy.
       # Supported schemes: http, https, socks5, socks5h.
       # Empty/unset inherits existing CPA routing. Invalid settings and runtime
@@ -161,12 +168,22 @@ plugins:
       usage_report_url: "http://cpa-manager-plus:18317/v0/management/usage/import"
       usage_report_key: ""
 
-      # Plugin-layer management auth. When set, all mutating endpoints under
-      # /v0/management/plugins/workbuddy/* require this Bearer token.
-      # When empty (default) the host's management middleware is the only
+      # Plugin-layer management auth. When set, all API endpoints under
+      # /v0/management/plugins/workbuddy/* require this Bearer token; public
+      # panel resources remain key-free. When empty (default), the host's
+      # management middleware is the only
       # guard. Also readable from WB_MANAGEMENT_KEY env var.
       management_key: ""
 ```
+
+The resolved profiles are available from the read-only management route
+`/v0/management/plugins/workbuddy/wire-profiles`. Its response is limited to
+realm, client mode, profile, version/source, and installation-identity safety
+state; it contains no account/session identifiers, credentials, secret, or local
+path. The 32-byte installation secret used for stable IDs lives under that CPA
+instance's `Host.AuthDir/.workbuddy-installation-identity/installation.key`; see
+[Client consistency](docs/fingerprint-compatibility.md) for permissions,
+migration, backup, and offline-only reset semantics.
 
 Model aliases and host-level exclusions can still use CPA's
 `oauth-model-alias` and `oauth-excluded-models` config. The panel's hide action
